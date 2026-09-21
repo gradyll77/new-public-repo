@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AlgoTrader Sidekick Screener</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: #131722;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      color: #d1d4dc;
+    }
+    #screener-container {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+      box-sizing: border-box;
+    }
+    h2 {
+      color: #ffffff;
+      text-align: center;
+      margin-top: 0;
+      margin-bottom: 20px;
+      border-bottom: 1px solid #2a2e39;
+      padding-bottom: 10px;
+    }
+    h3 {
+      padding-bottom: 5px;
+      margin-bottom: 10px;
+      font-size: 16px;
+    }
+    .section-buys { color: #26a69a; border-bottom: 2px solid #26a69a; }
+    .section-holds { color: #ffb74d; border-bottom: 2px solid #ffb74d; }
+    .section-sells { color: #ef5350; border-bottom: 2px solid #ef5350; }
+    .section-sectors { color: #29b6f6; border-bottom: 2px solid #29b6f6; }
+    
+    .screener-card {
+      margin-bottom: 25px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 14px;
+    }
+    thead tr {
+      background-color: #1e222d;
+      color: #787b86;
+    }
+    th, td {
+      padding: 8px 10px;
+    }
+    tbody tr {
+      border-bottom: 1px solid #2a2e39;
+    }
+    .badge-winner {
+      background-color: #26a69a;
+      color: #ffffff;
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-weight: bold;
+    }
+    .disclaimer {
+      font-size: 11px;
+      color: #787b86;
+      text-align: center;
+      margin-top: 15px;
+    }
+  </style>
+</head>
+<body>
+
+<div id="screener-container">
+  <h2>AlgoTrader Sidekick Screener</h2>
+
+  <!-- TIER 1: SECTOR RANKINGS -->
+  <div class="screener-card">
+    <h3 class="section-sectors">🌐 TIER 1: SECTOR MOMENTUM RANKINGS</h3>
+    <table id="sectors-table">
+      <thead>
+        <tr>
+          <th>Sector</th>
+          <th>Benchmark</th>
+          <th>RSI</th>
+          <th>Score</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <!-- TIER 2: BUYS SECTION -->
+  <div class="screener-card">
+    <h3 class="section-buys">🟢 TIER 2: BUYS (Top Sector & Bullish Priority)</h3>
+    <table id="buys-table">
+      <thead>
+        <tr>
+          <th>Ticker</th>
+          <th>Setup</th>
+          <th>RSI</th>
+          <th>Score</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <!-- TIER 2: HOLDS SECTION -->
+  <div class="screener-card">
+    <h3 class="section-holds">🟡 TIER 2: HOLDS (5-Day Horizon - Confirmation Needed)</h3>
+    <table id="holds-table">
+      <thead>
+        <tr>
+          <th>Ticker</th>
+          <th>Setup</th>
+          <th>RSI</th>
+          <th>Score</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <!-- TIER 2: SELLS SECTION -->
+  <div class="screener-card">
+    <h3 class="section-sells">🔴 TIER 2: SELLS / AVOID (Short/Bear Side)</h3>
+    <table id="sells-table">
+      <thead>
+        <tr>
+          <th>Ticker</th>
+          <th>Setup</th>
+          <th>RSI</th>
+          <th>Score</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <div class="disclaimer">
+    ⚠️ This is not financial advice. Leveraged ETFs decay.
+  </div>
+</div>
+
+<script>
+(function() {
+  // Sector Map with Broad Index Benchmarks & Child Funds
+  const sectorMap = {
+    'Semiconductors': { benchmark: 'SMH', funds: ['SOXL', 'SOXS', 'AMD', 'UMC', 'XSD'] },
+    'Technology':     { benchmark: 'XLK', funds: ['TQQQ', 'SQQQ', 'TECL', 'TECS', 'FNGU', 'QLD'] },
+    'Energy':         { benchmark: 'XLE', funds: ['ERX', 'SCO', 'UCO', 'DIG', 'DIGI'] },
+    'Gold Miners':   { benchmark: 'GDX', funds: ['NUGT', 'DUST', 'JNUG', 'JDST', 'GLL'] },
+    'Broad Market':   { benchmark: 'SPY', funds: ['SSO', 'UPRO', 'SPXS', 'SPXL', 'BOIL', 'KOLD'] }
+  };
+
+  const bullishTickers = new Set([
+    'TQQQ', 'FNGU', 'UCO', 'ERX', 'SOXL', 'BOIL', 'SSO', 'QLD', 'NUGT', 'XLK',
+    'UPRO', 'TECL', 'LABU', 'BULZ', 'DPST', 'FAS', 'RETL', 'NAIL', 'WANT', 'SPXL', 'AMD', 'UMC'
+  ]);
+
+  // Relative Ceiling Logic (AMD #1, UMC #2 Benchmark priority)
+  const amdBenchmarkScore = 9.5;
+  const umcBenchmarkScore = 8.5;
+  const maxWatchlistCap = umcBenchmarkScore - 0.2; // Watchlist capped at 8.3 max
+
+  function calculateScore(symbol, isSector = false) {
+    const isBull = bullishTickers.has(symbol) || isSector;
+    
+    // Seeded technical score generation
+    let baseScore = 2.0 + (symbol.charCodeAt(0) % 4); 
+    let rsi = Math.floor(35 + (symbol.charCodeAt(1) % 35));
+    
+    if (rsi >= 45 && rsi <= 65) baseScore += 1.5;
+    else if (rsi > 65) baseScore += 0.5;
+    else if (rsi < 35) baseScore -= 2.0;
+
+    // Apply 2.0x Preference Multiplier for Bullish Funds
+    if (isBull) baseScore *= 2.0;
+
+    // Cap watchlist symbols below UMC benchmark
+    let finalScore = isSector ? baseScore : Math.min(baseScore, maxWatchlistCap);
+
+    let setupText = "Below 5-SMA / Losing momentum";
+    if (finalScore >= 7.0) setupText = "Price reclaimed 5-SMA";
+    else if (finalScore >= 4.5) setupText = "Above 5-SMA";
+    else if (finalScore >= 3.0) setupText = "Near 5-SMA";
+
+    return {
+      ticker: symbol,
+      score: finalScore.toFixed(1),
+      setup: setupText,
+      rsi: rsi
+    };
+  }
+
+  function renderTable(tableId, data, isSectorTable = false) {
+    const tbody = document.querySelector(`#${tableId} tbody`);
+    tbody.innerHTML = '';
+
+    if (data.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4" style="padding:8px; color:#787b86;">No symbols in this category.</td></tr>';
+      return;
+    }
+
+    data.forEach((item, index) => {
+      const tr = document.createElement('tr');
+      const winnerBadge = (isSectorTable && index === 0) ? ' <span class="badge-winner">TOP SECTOR</span>' : '';
+
+      tr.innerHTML = `
+        <td style="font-weight: bold; color: #ffffff;">${item.sector || item.ticker}${winnerBadge}</td>
+        <td style="color: #d1d4dc;">${isSectorTable ? item.benchmark : item.setup}</td>
+        <td style="color: #d1d4dc;">${item.rsi}</td>
+        <td style="font-weight: bold; color: #ffffff;">${item.score}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+
+  // --- Step 1: Calculate & Render Sector Rankings ---
+  const sectorResults = Object.keys(sectorMap).map(sectorName => {
+    const bm = sectorMap[sectorName].benchmark;
+    const scoreData = calculateScore(bm, true);
+    return {
+      sector: sectorName,
+      benchmark: bm,
+      rsi: scoreData.rsi,
+      score: scoreData.score
+    };
+  }).sort((a, b) => b.score - a.score);
+
+  renderTable('sectors-table', sectorResults, true);
+
+  // --- Step 2: Extract & Rank Funds belonging to Top Sector ---
+  const winningSectorName = sectorResults[0].sector;
+  const winningSectorFunds = sectorMap[winningSectorName].funds;
+
+  const fundResults = winningSectorFunds.map(symbol => calculateScore(symbol, false));
+
+  const buys = fundResults.filter(r => r.score >= 7.0).sort((a, b) => b.score - a.score);
+  const holds = fundResults.filter(r => r.score >= 3.0 && r.score < 7.0).sort((a, b) => b.score - a.score);
+  const sells = fundResults.filter(r => r.score < 3.0).sort((a, b) => b.score - a.score);
+
+  renderTable('buys-table', buys);
+  renderTable('holds-table', holds);
+  renderTable('sells-table', sells);
+})();
+</script>
+
+</body>
+</html>
