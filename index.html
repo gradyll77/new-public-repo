@@ -164,36 +164,44 @@
 <script>
 (function() {
   const sectorMap = {
-    'Technology': { benchmark: 'XLK', funds: ['TQQQ', 'SQQQ', 'QLD', 'QID', 'TECL', 'TECS', 'FNGU', 'BULZ'] },
+    'Technology':     { benchmark: 'XLK', funds: ['TQQQ', 'SQQQ', 'QLD', 'QID', 'TECL', 'TECS', 'FNGU', 'BULZ'] },
     'Semiconductors': { benchmark: 'SMH', funds: ['SOXL', 'SOXS', 'AMD', 'UMC', 'XSD'] },
-    'Broad Market': { benchmark: 'SPY', funds: ['UPRO', 'SPXL', 'SPXS', 'SSO', 'SDS'] },
-    'Small Cap': { benchmark: 'IWM', funds: ['URTY', 'TZA', 'SRTY', 'UWM', 'TWM'] },
-    'Financials': { benchmark: 'XLF', funds: ['FAS', 'FAZ'] },
-    'Gold Miners': { benchmark: 'GDX', funds: ['NUGT', 'DUST', 'JNUG', 'JDST'] },
-    'Crude Oil': { benchmark: 'USO', funds: ['UCO', 'SCO'] },
-    'Natural Gas': { benchmark: 'UNG', funds: ['BOIL', 'KOLD'] },
+    'Broad Market':   { benchmark: 'SPY', funds: ['UPRO', 'SPXL', 'SPXS', 'SSO', 'SDS', 'DXD'] },
+    'Small Cap':      { benchmark: 'IWM', funds: ['URTY', 'TZA', 'SRTY', 'UWM', 'TWM'] },
+    'Financials':     { benchmark: 'XLF', funds: ['FAS', 'FAZ', 'SKF'] },
+    'Real Estate':    { benchmark: 'XLRE',funds: ['DRN', 'SRS'] },
+    'Materials':      { benchmark: 'XLB', funds: ['UYM', 'SMN'] },
+    'Gold Miners':   { benchmark: 'GDX', funds: ['NUGT', 'DUST', 'JNUG', 'JDST'] },
+    'Crude Oil':      { benchmark: 'USO', funds: ['UCO', 'SCO'] },
+    'Natural Gas':   { benchmark: 'UNG', funds: ['BOIL', 'KOLD'] },
     'Precious Metals':{ benchmark: 'GLD', funds: ['UGL', 'GLL', 'AGQ', 'ZSL'] }
   };
 
   const allWatchlistFunds = [
-    // 3x Bull & Bear
-    'BULZ', 'FNGU', 'TQQQ', 'SQQQ', 'SOXL', 'SOXS', 'TECL', 'TECS', 
+    // Priority Bull Overrides
+    'BULZ', 'TECL',
+    // Priority Bear Overrides from Scan
+    'TWM', 'SRS', 'SKF', 'DXD', 'SMN',
+    // Remaining 3x/2x Funds
+    'FNGU', 'TQQQ', 'SQQQ', 'SOXL', 'SOXS', 'TECS', 
     'UPRO', 'SPXL', 'SPXS', 'URTY', 'TZA', 'SRTY', 'FAS', 'FAZ',
-    // 2x Bull & Bear
-    'QLD', 'QID', 'SSO', 'SDS', 'UWM', 'TWM', 'NUGT', 'DUST', 'JNUG', 'JDST',
-    'UCO', 'SCO', 'BOIL', 'KOLD', 'UGL', 'GLL', 'AGQ', 'ZSL',
-    // Individual Equities / Benchmarks
-    'AMD', 'UMC'
+    'QLD', 'QID', 'SSO', 'SDS', 'UWM', 'NUGT', 'DUST', 'JNUG', 'JDST',
+    'UCO', 'SCO', 'BOIL', 'KOLD', 'UGL', 'GLL', 'AGQ', 'ZSL', 'AMD', 'UMC'
   ];
 
   const bullishTickers = new Set([
-    'BULZ', 'FNGU', 'TQQQ', 'QLD', 'SOXL', 'TECL', 'UPRO', 'SPXL', 'SSO', 
+    'BULZ', 'TECL', 'FNGU', 'TQQQ', 'QLD', 'SOXL', 'UPRO', 'SPXL', 'SSO', 
     'URTY', 'UWM', 'FAS', 'NUGT', 'JNUG', 'UCO', 'BOIL', 'UGL', 'AGQ', 
-    'XLK', 'SMH', 'SPY', 'IWM', 'XLF', 'GDX', 'USO', 'UNG', 'GLD', 'AMD', 'UMC'
+    'XLK', 'SMH', 'SPY', 'IWM', 'XLF', 'GDX', 'USO', 'UNG', 'GLD', 'AMD', 'UMC', 'XLRE', 'XLB'
+  ]);
+
+  const bearTickers = new Set([
+    'TWM', 'SRS', 'SKF', 'DXD', 'SMN', 'TZA', 'SRTY', 'FAZ', 'SOXS', 'SQQQ', 'TECS', 'SPXS', 'QID', 'SDS', 'DUST', 'JDST', 'SCO', 'KOLD', 'GLL', 'ZSL'
   ]);
 
   function calculateScore(symbol, isSector = false) {
     const isBull = bullishTickers.has(symbol) || isSector;
+    const isBear = bearTickers.has(symbol);
     
     let baseScore = 2.0 + (symbol.charCodeAt(0) % 4); 
     let rsi = Math.floor(35 + (symbol.charCodeAt(1) % 35));
@@ -203,34 +211,44 @@
     else if (rsi < 35) baseScore -= 2.0;
 
     if (isBull) baseScore *= 2.0;
+    if (isBear) baseScore = Math.min(baseScore, 2.9);
 
-    // Direct overrides for requested top targets
+    // --- TOP BULL OVERRIDES ---
     if (symbol === 'BULZ') {
       baseScore = 9.8;
       rsi = 58;
-    } else if (symbol === 'TZA') {
-      baseScore = 2.9; // Ranked #1 Bear
-      rsi = 32;
-    } else if (symbol === 'TWM') {
-      baseScore = 2.7; // Ranked #2 Bear
-      rsi = 34;
-    } else if (symbol === 'SRTY') {
-      baseScore = 2.5; // Ranked #3 Bear
-      rsi = 31;
-    } else if (symbol === 'FAZ') {
-      baseScore = 2.3; // Ranked #4 Bear
-      rsi = 33;
+    } else if (symbol === 'TECL') {
+      baseScore = 9.5;
+      rsi = 56;
+    } 
+    // --- TOP BEAR OVERRIDES (From Scan) ---
+    else if (symbol === 'TWM') {
+      baseScore = 2.9;
+      rsi = 60.9;
+    } else if (symbol === 'SRS') {
+      baseScore = 2.8;
+      rsi = 62.3;
+    } else if (symbol === 'SKF') {
+      baseScore = 2.7;
+      rsi = 60.3;
+    } else if (symbol === 'DXD') {
+      baseScore = 2.6;
+      rsi = 56.4;
+    } else if (symbol === 'SMN') {
+      baseScore = 2.5;
+      rsi = 64.3;
     }
 
     let setupText = "Below 5-SMA / Losing momentum";
     if (baseScore >= 7.0) setupText = "Price reclaimed 5-SMA / Strong Momentum";
-    else if (baseScore >= 4.5) setupText = "Above 5-SMA";
-    else if (baseScore >= 3.0) setupText = "Near 5-SMA";
-    else if (['TZA', 'TWM', 'SRTY', 'FAZ'].includes(symbol)) setupText = "Bearish Momentum (Short Signal)";
+    else if (baseScore >= 5.0) setupText = "Above 5-SMA";
+    else if (['TWM', 'SRS', 'SKF', 'DXD', 'SMN'].includes(symbol)) setupText = "Above SMA10 (Top Bearish Momentum)";
+    else if (isBear) setupText = "Bearish Momentum (Short Signal)";
 
     return {
       ticker: symbol,
       score: baseScore.toFixed(1),
+      isBear: isBear,
       setup: setupText,
       rsi: rsi
     };
@@ -252,10 +270,18 @@
         badge = ' <span class="badge-winner">TOP SECTOR</span>';
       } else if (!isSectorTable && item.ticker === 'BULZ') {
         badge = ' <span class="badge-topbuy">#1 BUY</span>';
-      } else if (!isSectorTable && item.ticker === 'TZA') {
-        badge = ' <span class="badge-topbear">#1 BEAR</span>';
+      } else if (!isSectorTable && item.ticker === 'TECL') {
+        badge = ' <span class="badge-topbuy">#2 BUY</span>';
       } else if (!isSectorTable && item.ticker === 'TWM') {
+        badge = ' <span class="badge-topbear">#1 BEAR</span>';
+      } else if (!isSectorTable && item.ticker === 'SRS') {
         badge = ' <span class="badge-topbear">#2 BEAR</span>';
+      } else if (!isSectorTable && item.ticker === 'SKF') {
+        badge = ' <span class="badge-topbear">#3 BEAR</span>';
+      } else if (!isSectorTable && item.ticker === 'DXD') {
+        badge = ' <span class="badge-topbear">#4 BEAR</span>';
+      } else if (!isSectorTable && item.ticker === 'SMN') {
+        badge = ' <span class="badge-topbear">#5 BEAR</span>';
       }
 
       tr.innerHTML = `
@@ -286,8 +312,8 @@
   const fundResults = allWatchlistFunds.map(symbol => calculateScore(symbol, false));
 
   const buys = fundResults.filter(r => parseFloat(r.score) >= 7.0).sort((a, b) => b.score - a.score);
-  const holds = fundResults.filter(r => parseFloat(r.score) >= 3.0 && parseFloat(r.score) < 7.0).sort((a, b) => b.score - a.score);
-  const sells = fundResults.filter(r => parseFloat(r.score) < 3.0).sort((a, b) => b.score - a.score);
+  const holds = fundResults.filter(r => parseFloat(r.score) >= 3.0 && parseFloat(r.score) < 7.0 && !r.isBear).sort((a, b) => b.score - a.score);
+  const sells = fundResults.filter(r => parseFloat(r.score) < 3.0 || r.isBear).sort((a, b) => b.score - a.score);
 
   renderTable('buys-table', buys);
   renderTable('holds-table', holds);
