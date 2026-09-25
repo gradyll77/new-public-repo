@@ -164,16 +164,16 @@
 <script>
 (function() {
   const sectorMap = {
-    'Technology':     { benchmark: 'XLK', funds: ['TQQQ', 'SQQQ', 'QLD', 'QID', 'TECL', 'TECS', 'FNGU', 'BULZ'] },
+    'Technology': { benchmark: 'XLK', funds: ['TQQQ', 'SQQQ', 'QLD', 'QID', 'TECL', 'TECS', 'FNGU', 'BULZ'] },
     'Semiconductors': { benchmark: 'SMH', funds: ['SOXL', 'SOXS', 'AMD', 'UMC', 'XSD'] },
-    'Broad Market':   { benchmark: 'SPY', funds: ['UPRO', 'SPXL', 'SPXS', 'SSO', 'SDS', 'DXD'] },
-    'Small Cap':      { benchmark: 'IWM', funds: ['URTY', 'TZA', 'SRTY', 'UWM', 'TWM'] },
-    'Financials':     { benchmark: 'XLF', funds: ['FAS', 'FAZ', 'SKF'] },
-    'Real Estate':    { benchmark: 'XLRE',funds: ['DRN', 'SRS'] },
-    'Materials':      { benchmark: 'XLB', funds: ['UYM', 'SMN'] },
-    'Gold Miners':   { benchmark: 'GDX', funds: ['NUGT', 'DUST', 'JNUG', 'JDST'] },
-    'Crude Oil':      { benchmark: 'USO', funds: ['UCO', 'SCO'] },
-    'Natural Gas':   { benchmark: 'UNG', funds: ['BOIL', 'KOLD'] },
+    'Broad Market': { benchmark: 'SPY', funds: ['UPRO', 'SPXL', 'SPXS', 'SSO', 'SDS', 'DXD'] },
+    'Small Cap': { benchmark: 'IWM', funds: ['URTY', 'TZA', 'SRTY', 'UWM', 'TWM'] },
+    'Financials': { benchmark: 'XLF', funds: ['FAS', 'FAZ', 'SKF'] },
+    'Real Estate': { benchmark: 'XLRE',funds: ['DRN', 'SRS'] },
+    'Materials': { benchmark: 'XLB', funds: ['UYM', 'SMN'] },
+    'Gold Miners': { benchmark: 'GDX', funds: ['NUGT', 'DUST', 'JNUG', 'JDST'] },
+    'Crude Oil': { benchmark: 'USO', funds: ['UCO', 'SCO'] },
+    'Natural Gas': { benchmark: 'UNG', funds: ['BOIL', 'KOLD'] },
     'Precious Metals':{ benchmark: 'GLD', funds: ['UGL', 'GLL', 'AGQ', 'ZSL'] }
   };
 
@@ -182,7 +182,7 @@
     'BULZ', 'TECL',
     // Priority Bear Overrides from Scan
     'TWM', 'SRS', 'SKF', 'DXD', 'SMN',
-    // Remaining 3x/2x Funds
+    // Additional Funds
     'FNGU', 'TQQQ', 'SQQQ', 'SOXL', 'SOXS', 'TECS', 
     'UPRO', 'SPXL', 'SPXS', 'URTY', 'TZA', 'SRTY', 'FAS', 'FAZ',
     'QLD', 'QID', 'SSO', 'SDS', 'UWM', 'NUGT', 'DUST', 'JNUG', 'JDST',
@@ -211,7 +211,6 @@
     else if (rsi < 35) baseScore -= 2.0;
 
     if (isBull) baseScore *= 2.0;
-    if (isBear) baseScore = Math.min(baseScore, 2.9);
 
     // --- TOP BULL OVERRIDES ---
     if (symbol === 'BULZ') {
@@ -221,7 +220,7 @@
       baseScore = 9.5;
       rsi = 56;
     } 
-    // --- TOP BEAR OVERRIDES (From Scan) ---
+    // --- TOP BEAR OVERRIDES (Matches TrendSpider Scan) ---
     else if (symbol === 'TWM') {
       baseScore = 2.9;
       rsi = 60.9;
@@ -237,6 +236,8 @@
     } else if (symbol === 'SMN') {
       baseScore = 2.5;
       rsi = 64.3;
+    } else if (isBear) {
+      baseScore = Math.min(baseScore, 2.4);
     }
 
     let setupText = "Below 5-SMA / Losing momentum";
@@ -256,6 +257,7 @@
 
   function renderTable(tableId, data, isSectorTable = false) {
     const tbody = document.querySelector(`#${tableId} tbody`);
+    if (!tbody) return;
     tbody.innerHTML = '';
 
     if (data.length === 0) {
@@ -304,16 +306,16 @@
       rsi: scoreData.rsi,
       score: scoreData.score
     };
-  }).sort((a, b) => b.score - a.score);
+  }).sort((a, b) => parseFloat(b.score) - parseFloat(a.score));
 
   renderTable('sectors-table', sectorResults, true);
 
   // Tier 2: Evaluate All Watchlist Funds
   const fundResults = allWatchlistFunds.map(symbol => calculateScore(symbol, false));
 
-  const buys = fundResults.filter(r => parseFloat(r.score) >= 7.0).sort((a, b) => b.score - a.score);
-  const holds = fundResults.filter(r => parseFloat(r.score) >= 3.0 && parseFloat(r.score) < 7.0 && !r.isBear).sort((a, b) => b.score - a.score);
-  const sells = fundResults.filter(r => parseFloat(r.score) < 3.0 || r.isBear).sort((a, b) => b.score - a.score);
+  const buys = fundResults.filter(r => parseFloat(r.score) >= 7.0).sort((a, b) => parseFloat(b.score) - parseFloat(a.score));
+  const holds = fundResults.filter(r => parseFloat(r.score) >= 3.0 && parseFloat(r.score) < 7.0 && !r.isBear).sort((a, b) => parseFloat(b.score) - parseFloat(a.score));
+  const sells = fundResults.filter(r => parseFloat(r.score) < 3.0 || r.isBear).sort((a, b) => parseFloat(b.score) - parseFloat(a.score));
 
   renderTable('buys-table', buys);
   renderTable('holds-table', holds);
