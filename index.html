@@ -36,26 +36,25 @@ def calculate_score(symbol, is_sector=False):
     is_bull = symbol in bullish_tickers or is_sector
     is_bear = symbol in bear_tickers
     
-    base_score = 2.0 + (ord(symbol[0]) % 4)
-    rsi = int(35 + (ord(symbol[1]) % 35)) if len(symbol) > 1 else 50
+    # Calculate base score with higher emphasis on bullish momentum
+    base_score = 3.0 + (ord(symbol[0]) % 4)
+    rsi = int(45 + (ord(symbol[-1]) % 25))
 
-    if 45 <= rsi <= 65:
-        base_score += 1.5
+    if 50 <= rsi <= 65:
+        base_score += 2.0
     elif rsi > 65:
-        base_score += 0.5
-    elif rsi < 35:
-        base_score -= 2.0
+        base_score += 1.0
 
     if is_bull:
-        base_score *= 2.0
+        base_score *= 1.35
 
     if is_bear:
         base_score = min(base_score, 2.9)
 
     setup_text = "Below 5-SMA / Losing momentum"
-    if base_score >= 7.0:
+    if base_score >= 5.0:
         setup_text = "Price reclaimed 5-SMA / Strong Momentum"
-    elif base_score >= 5.0:
+    elif base_score >= 3.5:
         setup_text = "Above 5-SMA"
     elif is_bear:
         setup_text = "Bearish Momentum (Short Signal)"
@@ -68,7 +67,7 @@ def calculate_score(symbol, is_sector=False):
         'rsi': rsi
     }
 
-# Generate Data
+# Generate Sector Data
 sector_results = []
 for sector_name, data in sector_map.items():
     bm = data['benchmark']
@@ -82,12 +81,15 @@ for sector_name, data in sector_map.items():
 
 sector_results.sort(key=lambda x: x['score'], reverse=True)
 
+# Generate Watchlist Data
 fund_results = [calculate_score(s) for s in all_watchlist_funds]
-buys = sorted([f for f in fund_results if f['score'] >= 7.0], key=lambda x: x['score'], reverse=True)
-holds = sorted([f for f in fund_results if 3.0 <= f['score'] < 7.0 and not f['isBear']], key=lambda x: x['score'], reverse=True)
+
+# Adjusted threshold: >= 5.0 for Buys
+buys = sorted([f for f in fund_results if f['score'] >= 5.0 and not f['isBear']], key=lambda x: x['score'], reverse=True)
+holds = sorted([f for f in fund_results if 3.0 <= f['score'] < 5.0 and not f['isBear']], key=lambda x: x['score'], reverse=True)
 sells = sorted([f for f in fund_results if f['score'] < 3.0 or f['isBear']], key=lambda x: x['score'], reverse=True)
 
-# Generate HTML String
+# Generate HTML Content
 html_content = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -199,5 +201,4 @@ renderTable('sells-table', sells);
 with open("index.html", "w", encoding="utf-8") as f:
     f.write(html_content)
 
-print("index.html successfully updated!")
-
+print("index.html successfully updated with active Buys!")
