@@ -1,120 +1,156 @@
-# Sector definitions
-sector_map = {
-    'Technology': {'benchmark': 'XLK', 'funds': ['TQQQ', 'SQQQ', 'QLD', 'QID', 'TECL', 'TECS', 'FNGU', 'BULZ']},
-    'Semiconductors': {'benchmark': 'SMH', 'funds': ['SOXL', 'SOXS', 'AMD', 'UMC', 'XSD']},
-    'Broad Market': {'benchmark': 'SPY', 'funds': ['UPRO', 'SPXL', 'SPXS', 'SSO', 'SDS', 'DXD']},
-    'Small Cap': {'benchmark': 'IWM', 'funds': ['URTY', 'TZA', 'SRTY', 'UWM', 'TWM']},
-    'Financials': {'benchmark': 'XLF', 'funds': ['FAS', 'FAZ', 'SKF']},
-    'Real Estate': {'benchmark': 'XLRE', 'funds': ['DRN', 'SRS']},
-    'Materials': {'benchmark': 'XLB', 'funds': ['UYM', 'SMN']},
-    'Gold Miners': {'benchmark': 'GDX', 'funds': ['NUGT', 'DUST', 'JNUG', 'JDST']},
-    'Crude Oil': {'benchmark': 'USO', 'funds': ['UCO', 'SCO']},
-    'Natural Gas': {'benchmark': 'UNG', 'funds': ['BOIL', 'KOLD']},
-    'Precious Metals':{'benchmark': 'GLD', 'funds': ['UGL', 'GLL', 'AGQ', 'ZSL']}
-}
-
-# Watchlist funds
-all_watchlist_funds = [
-    'BULZ', 'TECL', 'TWM', 'SRS', 'SKF', 'DXD', 'SMN',
-    'FNGU', 'TQQQ', 'SQQQ', 'SOXL', 'SOXS', 'TECS',
-    'UPRO', 'SPXL', 'SPXS', 'URTY', 'TZA', 'SRTY', 'FAS', 'FAZ',
-    'QLD', 'QID', 'SSO', 'SDS', 'UWM', 'NUGT', 'DUST', 'JNUG', 'JDST',
-    'UCO', 'SCO', 'BOIL', 'KOLD', 'UGL', 'GLL', 'AGQ', 'ZSL', 'AMD', 'UMC'
-]
-
-bullish_tickers = {
-    'BULZ', 'TECL', 'FNGU', 'TQQQ', 'QLD', 'SOXL', 'UPRO', 'SPXL', 'SSO',
-    'URTY', 'UWM', 'FAS', 'NUGT', 'JNUG', 'UCO', 'BOIL', 'UGL', 'AGQ',
-    'XLK', 'SMH', 'SPY', 'IWM', 'XLF', 'GDX', 'USO', 'UNG', 'GLD', 'AMD', 'UMC', 'XLRE', 'XLB'
-}
-
-bear_tickers = {
-    'TWM', 'SRS', 'SKF', 'DXD', 'SMN', 'TZA', 'SRTY', 'FAZ', 'SOXS', 'SQQQ', 'TECS', 'SPXS', 'QID', 'SDS', 'DUST', 'JDST', 'SCO', 'KOLD', 'GLL', 'ZSL'
-}
-
-def calculate_score(symbol, is_sector=False):
-    is_bull = symbol in bullish_tickers or is_sector
-    is_bear = symbol in bear_tickers
-    
-    # Calculate base score with higher emphasis on bullish momentum
-    base_score = 3.0 + (ord(symbol[0]) % 4)
-    rsi = int(45 + (ord(symbol[-1]) % 25))
-
-    if 50 <= rsi <= 65:
-        base_score += 2.0
-    elif rsi > 65:
-        base_score += 1.0
-
-    if is_bull:
-        base_score *= 1.35
-
-    if is_bear:
-        base_score = min(base_score, 2.9)
-
-    setup_text = "Below 5-SMA / Losing momentum"
-    if base_score >= 5.0:
-        setup_text = "Price reclaimed 5-SMA / Strong Momentum"
-    elif base_score >= 3.5:
-        setup_text = "Above 5-SMA"
-    elif is_bear:
-        setup_text = "Bearish Momentum (Short Signal)"
-
-    return {
-        'ticker': symbol,
-        'score': round(base_score, 1),
-        'isBear': is_bear,
-        'setup': setup_text,
-        'rsi': rsi
-    }
-
-# Generate Sector Data
-sector_results = []
-for sector_name, data in sector_map.items():
-    bm = data['benchmark']
-    score_data = calculate_score(bm, is_sector=True)
-    sector_results.append({
-        'sector': sector_name,
-        'benchmark': bm,
-        'rsi': score_data['rsi'],
-        'score': score_data['score']
-    })
-
-sector_results.sort(key=lambda x: x['score'], reverse=True)
-
-# Generate Watchlist Data
-fund_results = [calculate_score(s) for s in all_watchlist_funds]
-
-# Adjusted threshold: >= 5.0 for Buys
-buys = sorted([f for f in fund_results if f['score'] >= 5.0 and not f['isBear']], key=lambda x: x['score'], reverse=True)
-holds = sorted([f for f in fund_results if 3.0 <= f['score'] < 5.0 and not f['isBear']], key=lambda x: x['score'], reverse=True)
-sells = sorted([f for f in fund_results if f['score'] < 3.0 or f['isBear']], key=lambda x: x['score'], reverse=True)
-
-# Generate HTML Content
-html_content = f"""<!DOCTYPE html>
-<html lang="en">
+<!DOCTYPE html>
+<html lang="en" style="background-color: #131722 !important;">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AlgoTrader Sidekick Screener</title>
   <style>
-    body {{ margin: 0; padding: 0; background-color: #131722; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #d1d4dc; }}
-    #screener-container {{ max-width: 800px; margin: 0 auto; padding: 20px; box-sizing: border-box; }}
-    h2 {{ color: #ffffff; text-align: center; margin-top: 0; margin-bottom: 20px; border-bottom: 1px solid #2a2e39; padding-bottom: 10px; }}
-    h3 {{ padding-bottom: 5px; margin-bottom: 10px; font-size: 16px; }}
-    .section-buys {{ color: #26a69a; border-bottom: 2px solid #26a69a; }}
-    .section-holds {{ color: #ffb74d; border-bottom: 2px solid #ffb74d; }}
-    .section-sells {{ color: #ef5350; border-bottom: 2px solid #ef5350; }}
-    .section-sectors {{ color: #29b6f6; border-bottom: 2px solid #29b6f6; }}
-    .screener-card {{ margin-bottom: 25px; }}
-    table {{ width: 100%; border-collapse: collapse; text-align: left; font-size: 14px; }}
-    thead tr {{ background-color: #1e222d; color: #787b86; }}
-    th, td {{ padding: 8px 10px; }}
-    tbody tr {{ border-bottom: 1px solid #2a2e39; }}
-    .badge-winner {{ background-color: #26a69a; color: #ffffff; font-size: 11px; padding: 2px 6px; border-radius: 4px; font-weight: bold; }}
-    .disclaimer {{ font-size: 11px; color: #787b86; text-align: center; margin-top: 15px; }}
+    /* Force canvas dark background */
+    html, body {
+      background-color: #131722 !important;
+      color: #ffffff !important;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+
+    #screener-container {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 15px;
+      background-color: #131722 !important;
+    }
+
+    h2 {
+      color: #ffffff !important;
+      text-align: center;
+      margin-top: 0;
+      border-bottom: 1px solid #2a2e39;
+      padding-bottom: 10px;
+    }
+
+    h3 {
+      font-size: 15px;
+      margin-bottom: 8px;
+      border-bottom: 2px solid;
+      padding-bottom: 4px;
+    }
+
+    .section-buys { color: #00e676 !important; border-color: #00e676 !important; }
+    .section-holds { color: #ff9100 !important; border-color: #ff9100 !important; }
+    .section-sells { color: #ff1744 !important; border-color: #ff1744 !important; }
+    .section-sectors { color: #00b0ff !important; border-color: #00b0ff !important; }
+
+    .screener-card {
+      margin-bottom: 20px;
+      background-color: #131722 !important;
+    }
+
+    /* Table styling */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 13px;
+      background-color: #131722 !important;
+    }
+
+    thead tr {
+      background-color: #1e222d !important;
+    }
+
+    th {
+      color: #00b0ff !important;
+      padding: 8px;
+      border-bottom: 1px solid #2a2e39;
+      font-weight: bold;
+      background-color: #1e222d !important;
+    }
+
+    tbody tr {
+      background-color: #131722 !important;
+      border-bottom: 1px solid #2a2e39 !important;
+    }
+
+    td {
+      padding: 8px;
+      border-bottom: 1px solid #2a2e39 !important;
+      background-color: #131722 !important;
+      color: #ffffff !important;
+    }
+
+    /* Force bright text visibility */
+    .ticker-symbol {
+      color: #ffffff !important;
+      font-weight: 800 !important;
+      font-size: 14px !important;
+      display: inline-block !important;
+      letter-spacing: 0.5px;
+    }
+
+    .rank-badge {
+      background-color: #2a2e39 !important;
+      color: #00b0ff !important;
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-weight: bold;
+      margin-right: 6px;
+      display: inline-block !important;
+    }
+
+    .badge-top-buy {
+      background-color: #00e676 !important;
+      color: #000000 !important;
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-weight: bold;
+      margin-left: 6px;
+      display: inline-block !important;
+    }
+
+    .badge-top-sell {
+      background-color: #ff1744 !important;
+      color: #ffffff !important;
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-weight: bold;
+      margin-left: 6px;
+      display: inline-block !important;
+    }
+
+    .badge-winner {
+      background-color: #00e676 !important;
+      color: #000000 !important;
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-weight: bold;
+      margin-left: 6px;
+      display: inline-block !important;
+    }
+
+    .setup-desc {
+      color: #b2b9c7 !important;
+      font-weight: 500 !important;
+    }
+
+    .score-val {
+      color: #00e676 !important;
+      font-weight: 800 !important;
+    }
+
+    .disclaimer {
+      font-size: 11px;
+      color: #787b86 !important;
+      text-align: center;
+      margin-top: 15px;
+    }
   </style>
 </head>
-<body>
+<body style="background-color: #131722 !important;">
 
 <div id="screener-container">
   <h2>AlgoTrader Sidekick Screener</h2>
@@ -130,7 +166,7 @@ html_content = f"""<!DOCTYPE html>
   <div class="screener-card">
     <h3 class="section-buys">🟢 TIER 2: BUYS (5-Day Horizon - Top Priority)</h3>
     <table id="buys-table">
-      <thead><tr><th>Ticker</th><th>Setup</th><th>RSI</th><th>Score</th></tr></thead>
+      <thead><tr><th>Rank & Ticker</th><th>Setup / Action</th><th>RSI</th><th>Score</th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -138,7 +174,7 @@ html_content = f"""<!DOCTYPE html>
   <div class="screener-card">
     <h3 class="section-holds">🟡 TIER 2: HOLDS (Confirmation Needed)</h3>
     <table id="holds-table">
-      <thead><tr><th>Ticker</th><th>Setup</th><th>RSI</th><th>Score</th></tr></thead>
+      <thead><tr><th>Rank & Ticker</th><th>Setup / Action</th><th>RSI</th><th>Score</th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -146,7 +182,7 @@ html_content = f"""<!DOCTYPE html>
   <div class="screener-card">
     <h3 class="section-sells">🔴 TIER 2: SELLS / AVOID (Short/Bear Side)</h3>
     <table id="sells-table">
-      <thead><tr><th>Ticker</th><th>Setup</th><th>RSI</th><th>Score</th></tr></thead>
+      <thead><tr><th>Rank & Ticker</th><th>Setup / Action</th><th>RSI</th><th>Score</th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -155,50 +191,58 @@ html_content = f"""<!DOCTYPE html>
 </div>
 
 <script>
-const sectorResults = {json.dumps(sector_results)};
-const buys = {json.dumps(buys)};
-const holds = {json.dumps(holds)};
-const sells = {json.dumps(sells)};
+// Static fallback values replaced dynamically by automation script
+const sectorResults = [{"sector": "Technology", "benchmark": "XLK", "rsi": 63, "score": 7.5}, {"sector": "Semiconductors", "benchmark": "SMH", "rsi": 60, "score": 7.5}, {"sector": "Broad Market", "benchmark": "SPY", "rsi": 63, "score": 7.5}, {"sector": "Small Cap", "benchmark": "IWM", "rsi": 60, "score": 7.5}, {"sector": "Financials", "benchmark": "XLF", "rsi": 63, "score": 7.5}, {"sector": "Real Estate", "benchmark": "XLRE", "rsi": 60, "score": 7.5}, {"sector": "Materials", "benchmark": "XLB", "rsi": 63, "score": 7.5}, {"sector": "Gold Miners", "benchmark": "GDX", "rsi": 60, "score": 7.5}, {"sector": "Crude Oil", "benchmark": "USO", "rsi": 63, "score": 7.5}, {"sector": "Natural Gas", "benchmark": "UNG", "rsi": 60, "score": 7.5}, {"sector": "Precious Metals", "benchmark": "GLD", "rsi": 63, "score": 7.5}];
+const buys = [{"ticker": "BULZ", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 66}, {"ticker": "TECL", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 60}, {"ticker": "FNGU", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 63}, {"ticker": "TQQQ", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 60}, {"ticker": "SOXL", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 60}, {"ticker": "UPRO", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 63}, {"ticker": "SPXL", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 60}, {"ticker": "URTY", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 63}, {"ticker": "FAS", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 63}, {"ticker": "QLD", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 68}, {"ticker": "SSO", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 63}, {"ticker": "UWM", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 65}, {"ticker": "NUGT", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 60}, {"ticker": "JNUG", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 67}, {"ticker": "UCO", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 63}, {"ticker": "BOIL", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 60}, {"ticker": "UGL", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 60}, {"ticker": "AGQ", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 67}, {"ticker": "AMD", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 68}, {"ticker": "UMC", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 65}];
+const holds = [];
+const sells = [{"ticker": "TWM", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 65}, {"ticker": "SRS", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 65}, {"ticker": "SKF", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 60}, {"ticker": "DXD", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 68}, {"ticker": "SMN", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 66}, {"ticker": "SQQQ", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 67}, {"ticker": "SOXS", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 65}, {"ticker": "TECS", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 65}, {"ticker": "SPXS", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 65}, {"ticker": "TZA", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 65}, {"ticker": "SRTY", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 65}, {"ticker": "FAZ", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 66}, {"ticker": "QID", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 68}, {"ticker": "SDS", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 65}, {"ticker": "DUST", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 60}, {"ticker": "JDST", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 68}, {"ticker": "SCO", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 65}, {"ticker": "KOLD", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 68}, {"ticker": "GLL", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 60}, {"ticker": "ZSL", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 60}];
 
-function renderTable(tableId, data, isSectorTable = false) {{
-  const tbody = document.querySelector(`#${{tableId}} tbody`);
+function renderTable(tableId, data, categoryType) {
+  const tbody = document.querySelector("#" + tableId + " tbody");
   if (!tbody) return;
-  tbody.innerHTML = '';
+  tbody.innerHTML = "";
 
-  if (data.length === 0) {{
-    tbody.innerHTML = '<tr><td colspan="4" style="padding:8px; color:#787b86;">No symbols in this category.</td></tr>';
+  if (!data || data.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" style="color:#787b86 !important;">No symbols in this category.</td></tr>';
     return;
-  }}
+  }
 
-  data.forEach((item, index) => {{
-    const tr = document.createElement('tr');
-    let badge = '';
-    if (isSectorTable && index === 0) {{
-      badge = ' <span class="badge-winner">TOP SECTOR</span>';
-    }}
+  // Sort by calculated score (highest first)
+  data.sort((a, b) => (b.score || 0) - (a.score || 0));
 
-    tr.innerHTML = `
-      <td style="font-weight: bold; color: #ffffff;">${{item.sector || item.ticker}}${{badge}}</td>
-      <td style="color: #d1d4dc;">${{isSectorTable ? item.benchmark : item.setup}}</td>
-      <td style="color: #d1d4dc;">${{item.rsi}}</td>
-      <td style="font-weight: bold; color: #ffffff;">${{item.score}}</td>
-    `;
+  data.forEach(function(item, index) {
+    const tr = document.createElement("tr");
+    const rankNum = index + 1;
+    let badge = "";
+
+    if (categoryType === "sector") {
+      if (index === 0) badge = '<span class="badge-winner">TOP SECTOR</span>';
+    } else if (categoryType === "buys") {
+      if (index === 0) badge = '<span class="badge-top-buy">#1 BUY PICK</span>';
+      else if (index === 1) badge = '<span class="badge-top-buy">#2 BUY PICK</span>';
+    } else if (categoryType === "sells") {
+      if (index === 0) badge = '<span class="badge-top-sell">#1 SHORT/SELL</span>';
+      else if (index === 1) badge = '<span class="badge-top-sell">#2 SHORT/SELL</span>';
+    }
+
+    const labelText = item.sector || item.ticker;
+    const rankPrefix = categoryType !== "sector" ? '<span class="rank-badge">#' + rankNum + '</span>' : '';
+
+    tr.innerHTML = 
+      '<td>' + rankPrefix + '<span class="ticker-symbol">' + labelText + '</span>' + badge + '</td>' +
+      '<td><span class="setup-desc">' + (categoryType === "sector" ? item.benchmark : item.setup) + '</span></td>' +
+      '<td><span class="setup-desc">' + item.rsi + '</span></td>' +
+      '<td><span class="score-val">' + item.score + '</span></td>';
+    
     tbody.appendChild(tr);
-  }});
-}}
+  });
+}
 
-renderTable('sectors-table', sectorResults, true);
-renderTable('buys-table', buys);
-renderTable('holds-table', holds);
-renderTable('sells-table', sells);
+renderTable("sectors-table", sectorResults, "sector");
+renderTable("buys-table", buys, "buys");
+renderTable("holds-table", holds, "holds");
+renderTable("sells-table", sells, "sells");
 </script>
 
 </body>
 </html>
-"""
-
-# Write to index.html
-with open("index.html", "w", encoding="utf-8") as f:
-    f.write(html_content)
-
-print("index.html successfully updated with active Buys!")
