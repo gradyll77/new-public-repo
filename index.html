@@ -1,39 +1,268 @@
-<!DOCTYPE html>
-<html lang="en" style="background-color: #131722 !important;">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>AlgoTrader Sidekick Screener</title>
-  <style>
-    /* Force dark background */
-    html, body {
-      background-color: #131722 !important;
-      color: #ffffff !important;
-      margin: 0;
-      padding: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+import os
+import re
+import pandas as pd
+import yfinance as yf
+
+# ==============================================================================
+# CONFIGURATION & UNIVERSE
+# ==============================================================================
+# Focus list of leveraged ETFs and sector benchmarks
+ETF_UNIVERSE = [
+    # Bullish Leveraged ETFs
+    "TECL",
+    "TQQQ",
+    "SOXL",
+    "HIBL",
+    "BULZ",
+    "DRV",
+    "SDOW",
+    "NVDL",
+    "UCO",
+    # Bearish / Short Leveraged ETFs
+    "FAS",
+    "DFEN",
+    "DPST",
+    "SOXS",
+    "TMF",
+    "BOIL",
+    "UNG",
+    "HIBS",
+    "BERZ",
+]
+
+# Manual StockInvest scores (or integrate StockInvest API / Scraper if available)
+STOCKINVEST_SCORES = {
+    "DRV": 7.63,
+    "XLK": 4.63,
+    "SDOW": 4.07,
+    "NVDA": 3.99,
+    "NVDL": 3.71,
+    "DRIP": 3.29,
+    "OILD": 3.11,
+    "TECL": 2.93,
+    "YANG": 2.62,
+    "AMZN": 2.31,
+    "XBI": 1.28,
+    "META": 1.17,
+    "ERY": 1.13,
+    "UCO": 1.08,
+    "BULZ": 0.82,
+    "SOXL": 0.39,
+    "SOXX": 0.23,
+    "FAS": -10.00,
+    "DFEN": -9.00,
+    "DPST": -8.00,
+    "TMF": -7.19,
+    "BOIL": -5.80,
+    "SOXS": -5.72,
+    "UNG": -5.47,
+    "TLT": -5.02,
+    "DRN": -4.92,
+    "UDOW": -4.66,
+    "GUSH": -4.51,
+    "TNA": -4.41,
+    "WANT": -4.23,
+    "XLRE": -4.14,
+    "XLF": -3.88,
+    "TECS": -3.67,
+    "XLB": -3.63,
+    "FNGD": -3.50,
+    "HIBS": -3.17,
+    "VTWV": -3.14,
+    "NUGT": -3.13,
+    "BERZ": -2.77,
+}
+
+
+# ==============================================================================
+# TECHNICAL INDICATOR CALCULATIONS
+# ==============================================================================
+def calculate_rsi(series: pd.Series, period: int = 14) -> float:
+    """Calculates standard 14-day Relative Strength Index (RSI)."""
+    delta = series.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+
+    avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
+
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return float(rsi.iloc[-1])
+
+
+def fetch_market_data(ticker: str):
+    """Fetches daily prices via yfinance and computes SMA10, SMA20, and RSI14."""
+    try:
+        data = yf.Ticker(ticker).history(period="2mo")
+        if data.empty or len(data) < 20:
+            return None
+
+        close = data["Close"]
+        price = float(close.iloc[-1])
+        sma10 = float(close.rolling(window=10).mean().iloc[-1])
+        sma20 = float(close.rolling(window=20).mean().iloc[-1])
+        rsi = round(calculate_rsi(close, 14), 1)
+
+        return {"price": price, "sma10": sma10, "sma20": sma20, "rsi": rsi}
+    except Exception as e:
+        print(f"Error fetching data for {ticker}: {e}")
+        return None
+
+
+# ==============================================================================
+# REVERSE-ENGINEERED SIDEKICK & CONFLICT EVALUATION
+# ==============================================================================
+def evaluate_symbol(ticker: str):
+    """Evaluates a ticker using reverse-engineered Sidekick rules (75% weight)
+
+    and StockInvest score (25% weight) with conflict disqualification.
+    """
+    tech = fetch_market_data(ticker)
+    if not tech:
+        return None
+
+    price = tech["price"]
+    sma10 = tech["sma10"]
+    sma20 = tech["sma20"]
+    rsi = tech["rsi"]
+    si_score = STOCKINVEST_SCORES.get(ticker, 0.0)
+
+    # 1. Reverse-Engineered Sidekick Criteria (Max Scale: -10 to +10)
+    sk_score = 0.0
+
+    # Bullish Trend Checks
+    if price > sma10 and sma10 > sma20:
+        sk_score += 5.0
+    elif price > sma10:
+        sk_score += 2.0
+
+    # RSI Momentum Sweet Spot (55.0 to 67.0)
+    if 55.0 <= rsi <= 67.0:
+        sk_score += 3.5
+    elif 50.0 <= rsi < 55.0 or 67.0 < rsi <= 70.0:
+        sk_score += 1.5
+
+    # Price Clearance above SMA10
+    if price > sma10:
+        clearance_pct = ((price - sma10) / sma10) * 100
+        if clearance_pct >= 1.0:
+            sk_score += 1.5
+
+    # Bearish Trend Checks
+    if rsi <= 25.5:
+        sk_score -= 6.0
+    elif rsi <= 31.0:
+        sk_score -= 4.0
+
+    if price < sma10 and sma10 < sma20:
+        sk_score -= 4.0
+
+    # Clamp Sidekick score between -10.0 and +10.0
+    sk_score = max(min(sk_score, 10.0), -10.0)
+
+    # 2. Weighted Score Calculation
+    final_score = round((sk_score * 0.75) + (si_score * 0.25), 2)
+
+    # 3. Conflict and Disqualification Check
+    is_sk_buy = sk_score > 2.0
+    is_sk_sell = sk_score < -2.0
+    is_si_buy = si_score > 0.0
+    is_si_sell = si_score < 0.0
+
+    has_conflict = (is_sk_buy and is_si_sell) or (is_sk_sell and is_si_buy)
+
+    return {
+        "ticker": ticker,
+        "score": final_score,
+        "sk_score": sk_score,
+        "si_score": si_score,
+        "rsi": rsi,
+        "price": price,
+        "sma10": sma10,
+        "has_conflict": has_conflict,
     }
 
-    #screener-container {
-      max-width: 800px;
-      margin: 0 auto;
-      padding: 15px;
-      background-color: #131722 !important;
-    }
 
-    h2 {
-      color: #ffffff !important;
-      text-align: center;
-      margin-top: 0;
-      border-bottom: 1px solid #2a2e39;
-      padding-bottom: 10px;
-    }
+def generate_screener_data():
+    """Runs through the ETF universe and categorizes into Buys, Sells, and Holds."""
+    buys, sells, holds = [], [], []
 
-    h3 {
-      font-size: 15px;
-      margin-bottom: 8px;
-      border-bottom: 2px solid;
-      padding-bottom: 4px;
+    for ticker in ETF_UNIVERSE:
+        res = evaluate_symbol(ticker)
+        if not res:
+            continue
+
+        setup_text = f"Price ${res['price']:.2f} | Sidekick: {res['sk_score']} | SI: {res['si_score']}"
+
+        item = {
+            "ticker": res["ticker"],
+            "score": res["score"],
+            "isBear": res["score"] < 0,
+            "setup": setup_text,
+            "rsi": res["rsi"],
+        }
+
+        # Conflict override: push divergent picks to Holds
+        if res["has_conflict"]:
+            item["setup"] = (
+                f"⚠️ CONFLICT OVERRIDE (SI Score: {res['si_score']})"
+            )
+            holds.append(item)
+        elif res["score"] > 1.5 and res["si_score"] >= 0:
+            buys.append(item)
+        elif res["score"] < -1.5 and res["si_score"] <= 0:
+            sells.append(item)
+        else:
+            holds.append(item)
+
+    # Sort results
+    buys.sort(key=lambda x: x["score"], reverse=True)
+    sells.sort(key=lambda x: x["score"]) # Most negative magnitude first
+
+    return buys[:5], sells[:5], holds
+
+
+# ==============================================================================
+# HTML BUILDER & FILE OUTPUT
+# ==============================================================================
+def update_html_file(buys, sells, holds, filepath="index.html"):
+    """Reads index.html and updates the JS data arrays with fresh weighted scores."""
+    if not os.path.exists(filepath):
+        print(f"File {filepath} not found. Ensure script runs in repo root.")
+        return
+
+    with open(filepath, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    # Convert Python dicts to JavaScript JSON arrays
+    import json
+
+    buys_js = f"const buys = {json.dumps(buys, indent=2)};"
+    sells_js = f"const sells = {json.dumps(sells, indent=2)};"
+    holds_js = f"const holds = {json.dumps(holds, indent=2)};"
+
+    # Replace JS variable definitions in HTML file
+    content = re.sub(r"const buys = \[.*?\];", buys_js, content, flags=re.DOTALL)
+    content = re.sub(
+        r"const sells = \[.*?\];", sells_js, content, flags=re.DOTALL
+    )
+    content = re.sub(
+        r"const holds = \[.*?\];", holds_js, content, flags=re.DOTALL
+    )
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(content)
+
+    print(
+        f"Successfully updated {filepath} with {len(buys)} Buys, {len(sells)} Sells, and {len(holds)} Holds."
+    )
+
+
+if __name__ == "__main__":
+    print("Running ETF Screener Engine...")
+    buys, sells, holds = generate_screener_data()
+    update_html_file(buys, sells, holds, "index.html")
     }
 
     .section-buys { color: #00e676 !important; border-color: #00e676 !important; }
