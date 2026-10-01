@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AlgoTrader Sidekick Screener</title>
   <style>
-    /* Force canvas dark background */
+    /* Force dark background */
     html, body {
       background-color: #131722 !important;
       color: #ffffff !important;
@@ -79,7 +79,6 @@
       color: #ffffff !important;
     }
 
-    /* Force bright text visibility */
     .ticker-symbol {
       color: #ffffff !important;
       font-weight: 800 !important;
@@ -142,6 +141,11 @@
       font-weight: 800 !important;
     }
 
+    .score-val-sell {
+      color: #ff1744 !important;
+      font-weight: 800 !important;
+    }
+
     .disclaimer {
       font-size: 11px;
       color: #787b86 !important;
@@ -164,7 +168,7 @@
   </div>
 
   <div class="screener-card">
-    <h3 class="section-buys">🟢 TIER 2: BUYS (5-Day Horizon - Top Priority)</h3>
+    <h3 class="section-buys">🟢 TIER 2: BUYS (5-Day Horizon - Weighted Picks)</h3>
     <table id="buys-table">
       <thead><tr><th>Rank & Ticker</th><th>Setup / Action</th><th>RSI</th><th>Score</th></tr></thead>
       <tbody></tbody>
@@ -191,11 +195,35 @@
 </div>
 
 <script>
-// Static fallback values replaced dynamically by automation script
-const sectorResults = [{"sector": "Technology", "benchmark": "XLK", "rsi": 63, "score": 7.5}, {"sector": "Semiconductors", "benchmark": "SMH", "rsi": 60, "score": 7.5}, {"sector": "Broad Market", "benchmark": "SPY", "rsi": 63, "score": 7.5}, {"sector": "Small Cap", "benchmark": "IWM", "rsi": 60, "score": 7.5}, {"sector": "Financials", "benchmark": "XLF", "rsi": 63, "score": 7.5}, {"sector": "Real Estate", "benchmark": "XLRE", "rsi": 60, "score": 7.5}, {"sector": "Materials", "benchmark": "XLB", "rsi": 63, "score": 7.5}, {"sector": "Gold Miners", "benchmark": "GDX", "rsi": 60, "score": 7.5}, {"sector": "Crude Oil", "benchmark": "USO", "rsi": 63, "score": 7.5}, {"sector": "Natural Gas", "benchmark": "UNG", "rsi": 60, "score": 7.5}, {"sector": "Precious Metals", "benchmark": "GLD", "rsi": 63, "score": 7.5}];
-const buys = [{"ticker": "BULZ", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 66}, {"ticker": "TECL", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 60}, {"ticker": "FNGU", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 63}, {"ticker": "TQQQ", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 60}, {"ticker": "SOXL", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 60}, {"ticker": "UPRO", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 63}, {"ticker": "SPXL", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 60}, {"ticker": "URTY", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 63}, {"ticker": "FAS", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 63}, {"ticker": "QLD", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 68}, {"ticker": "SSO", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 63}, {"ticker": "UWM", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 65}, {"ticker": "NUGT", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 60}, {"ticker": "JNUG", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 67}, {"ticker": "UCO", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 63}, {"ticker": "BOIL", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 60}, {"ticker": "UGL", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 60}, {"ticker": "AGQ", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 67}, {"ticker": "AMD", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 68}, {"ticker": "UMC", "score": 7.5, "isBear": false, "setup": "Price reclaimed 5-SMA / Strong Momentum", "rsi": 65}];
+// Computed 75% Sidekick / 25% StockInvest Weighted Results
+const sectorResults = [
+  {"sector": "Technology", "benchmark": "XLK", "rsi": 63, "score": 1.16},
+  {"sector": "Real Estate", "benchmark": "XLRE", "rsi": 60, "score": -1.04},
+  {"sector": "Financials", "benchmark": "XLF", "rsi": 63, "score": -1.13},
+  {"sector": "Materials", "benchmark": "XLB", "rsi": 63, "score": -0.91}
+];
+
+const buys = [
+  {"ticker": "TECL", "score": 8.23, "isBear": false, "setup": "Sidekick #1 / Price > SMA10 ($240.29)", "rsi": 65.5},
+  {"ticker": "TQQQ", "score": 6.75, "isBear": false, "setup": "Sidekick #2 / Price > SMA10 ($78.96)", "rsi": 60.4},
+  {"ticker": "SOXL", "score": 6.10, "isBear": false, "setup": "Sidekick #3 / Price > SMA10 ($153.72)", "rsi": 60.7},
+  {"ticker": "HIBL", "score": 5.25, "isBear": false, "setup": "Sidekick Honorable Mention (Uptrend)", "rsi": 56.0},
+  {"ticker": "DRV", "score": 1.91, "isBear": false, "setup": "StockInvest #1 Buy Rank", "rsi": 68.0},
+  {"ticker": "SDOW", "score": 1.02, "isBear": false, "setup": "StockInvest #3 Buy Rank", "rsi": 62.0},
+  {"ticker": "NVDA", "score": 1.00, "isBear": false, "setup": "StockInvest #4 Buy Rank", "rsi": 64.0},
+  {"ticker": "NVDL", "score": 0.93, "isBear": false, "setup": "StockInvest #5 Buy Rank", "rsi": 63.5}
+];
+
 const holds = [];
-const sells = [{"ticker": "TWM", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 65}, {"ticker": "SRS", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 65}, {"ticker": "SKF", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 60}, {"ticker": "DXD", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 68}, {"ticker": "SMN", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 66}, {"ticker": "SQQQ", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 67}, {"ticker": "SOXS", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 65}, {"ticker": "TECS", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 65}, {"ticker": "SPXS", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 65}, {"ticker": "TZA", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 65}, {"ticker": "SRTY", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 65}, {"ticker": "FAZ", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 66}, {"ticker": "QID", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 68}, {"ticker": "SDS", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 65}, {"ticker": "DUST", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 60}, {"ticker": "JDST", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 68}, {"ticker": "SCO", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 65}, {"ticker": "KOLD", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 68}, {"ticker": "GLL", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 60}, {"ticker": "ZSL", "score": 2.5, "isBear": true, "setup": "Bearish Momentum (Short Signal)", "rsi": 60}];
+
+const sells = [
+  {"ticker": "FAS", "score": -8.47, "isBear": true, "setup": "Sidekick #1 Sell Pick (RSI Oversold 25.0)", "rsi": 25.0},
+  {"ticker": "DFEN", "score": -6.75, "isBear": true, "setup": "Sidekick #2 Sell Pick (RSI Oversold 25.2)", "rsi": 25.2},
+  {"ticker": "DPST", "score": -6.00, "isBear": true, "setup": "Sidekick #3 Sell Pick (RSI 30.4 / Falling)", "rsi": 30.4},
+  {"ticker": "TMF", "score": -1.80, "isBear": true, "setup": "StockInvest Strong Sell Rank (-7.19)", "rsi": 35.0},
+  {"ticker": "BOIL", "score": -1.45, "isBear": true, "setup": "StockInvest Strong Sell Rank (-5.80)", "rsi": 38.0},
+  {"ticker": "SOXS", "score": -1.43, "isBear": true, "setup": "StockInvest Strong Sell Rank (-5.72)", "rsi": 39.0}
+];
 
 function renderTable(tableId, data, categoryType) {
   const tbody = document.querySelector("#" + tableId + " tbody");
@@ -207,8 +235,12 @@ function renderTable(tableId, data, categoryType) {
     return;
   }
 
-  // Sort by calculated score (highest first)
-  data.sort((a, b) => (b.score || 0) - (a.score || 0));
+  // Sort by weighted score magnitude
+  if (categoryType === "sells") {
+    data.sort((a, b) => (a.score || 0) - (b.score || 0)); // Most negative first
+  } else {
+    data.sort((a, b) => (b.score || 0) - (a.score || 0)); // Highest positive first
+  }
 
   data.forEach(function(item, index) {
     const tr = document.createElement("tr");
@@ -227,12 +259,13 @@ function renderTable(tableId, data, categoryType) {
 
     const labelText = item.sector || item.ticker;
     const rankPrefix = categoryType !== "sector" ? '<span class="rank-badge">#' + rankNum + '</span>' : '';
+    const scoreClass = categoryType === "sells" ? "score-val-sell" : "score-val";
 
     tr.innerHTML = 
       '<td>' + rankPrefix + '<span class="ticker-symbol">' + labelText + '</span>' + badge + '</td>' +
       '<td><span class="setup-desc">' + (categoryType === "sector" ? item.benchmark : item.setup) + '</span></td>' +
       '<td><span class="setup-desc">' + item.rsi + '</span></td>' +
-      '<td><span class="score-val">' + item.score + '</span></td>';
+      '<td><span class="' + scoreClass + '">' + item.score + '</span></td>';
     
     tbody.appendChild(tr);
   });
