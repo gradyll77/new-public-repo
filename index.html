@@ -1,12 +1,14 @@
+
+import json
 import os
 import re
+import numpy as np
 import pandas as pd
 import yfinance as yf
 
 # ==============================================================================
-# CONFIGURATION & UNIVERSE
+# ETF UNIVERSE
 # ==============================================================================
-# Focus list of leveraged ETFs and sector benchmarks
 ETF_UNIVERSE = [
     # Bullish Leveraged ETFs
     "TECL",
@@ -14,68 +16,29 @@ ETF_UNIVERSE = [
     "SOXL",
     "HIBL",
     "BULZ",
-    "DRV",
-    "SDOW",
     "NVDL",
+    "NVDA",
     "UCO",
-    # Bearish / Short Leveraged ETFs
-    "FAS",
-    "DFEN",
-    "DPST",
+    # Bearish Leveraged ETFs
+    "DRV",
     "SOXS",
     "TMF",
+    "TECS",
+    "HIBS",
+    "SQQQ",
+    "BERZ",
+    "LABD",
+    "SDOW",
+    # Commodities / Other
+    "USO",
     "BOIL",
     "UNG",
-    "HIBS",
-    "BERZ",
+    "XLE",
 ]
-
-# Manual StockInvest scores (or integrate StockInvest API / Scraper if available)
-STOCKINVEST_SCORES = {
-    "DRV": 7.63,
-    "XLK": 4.63,
-    "SDOW": 4.07,
-    "NVDA": 3.99,
-    "NVDL": 3.71,
-    "DRIP": 3.29,
-    "OILD": 3.11,
-    "TECL": 2.93,
-    "YANG": 2.62,
-    "AMZN": 2.31,
-    "XBI": 1.28,
-    "META": 1.17,
-    "ERY": 1.13,
-    "UCO": 1.08,
-    "BULZ": 0.82,
-    "SOXL": 0.39,
-    "SOXX": 0.23,
-    "FAS": -10.00,
-    "DFEN": -9.00,
-    "DPST": -8.00,
-    "TMF": -7.19,
-    "BOIL": -5.80,
-    "SOXS": -5.72,
-    "UNG": -5.47,
-    "TLT": -5.02,
-    "DRN": -4.92,
-    "UDOW": -4.66,
-    "GUSH": -4.51,
-    "TNA": -4.41,
-    "WANT": -4.23,
-    "XLRE": -4.14,
-    "XLF": -3.88,
-    "TECS": -3.67,
-    "XLB": -3.63,
-    "FNGD": -3.50,
-    "HIBS": -3.17,
-    "VTWV": -3.14,
-    "NUGT": -3.13,
-    "BERZ": -2.77,
-}
 
 
 # ==============================================================================
-# TECHNICAL INDICATOR CALCULATIONS
+# TECHNICAL INDICATOR ENGINE
 # ==============================================================================
 def calculate_rsi(series: pd.Series, period: int = 14) -> float:
     """Calculates standard 14-day Relative Strength Index (RSI)."""
@@ -87,105 +50,160 @@ def calculate_rsi(series: pd.Series, period: int = 14) -> float:
     avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
 
     rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return float(rsi.iloc[-1])
+    return float(100 - (100 / (1 + rs)).iloc[-1])
 
 
 def fetch_market_data(ticker: str):
-    """Fetches daily prices via yfinance and computes SMA10, SMA20, and RSI14."""
+    """Fetches 15 days of historical price and volume data via yfinance."""
     try:
-        data = yf.Ticker(ticker).history(period="2mo")
-        if data.empty or len(data) < 20:
+        data = yf.Ticker(ticker).history(period="15d")
+        if data.empty or len(data) < 10:
             return None
-
-        close = data["Close"]
-        price = float(close.iloc[-1])
-        sma10 = float(close.rolling(window=10).mean().iloc[-1])
-        sma20 = float(close.rolling(window=20).mean().iloc[-1])
-        rsi = round(calculate_rsi(close, 14), 1)
-
-        return {"price": price, "sma10": sma10, "sma20": sma20, "rsi": rsi}
+        return data
     except Exception as e:
         print(f"Error fetching data for {ticker}: {e}")
         return None
 
 
 # ==============================================================================
-# REVERSE-ENGINEERED SIDEKICK & CONFLICT EVALUATION
+# ALGORITHM 1: 5-DAY ANCHORED VWAP (25% WEIGHT & INLINE CONFIRMATION)
+# ==============================================================================
+def calculate_anchored_vwap_score(df: pd.DataFrame) -> float:
+    """Anchors VWAP to the 5-day swing pivot (lowest low or highest high)
+
+    to establish institutional fair value for 5-to-10 day swing setups.
+    """
+    recent_5 = df.tail(5)
+
+    # Find the extreme low and high within the last 5 trading sessions
+    lowest_idx = recent_5["Low"].idxmin()
+    highest_idx = recent_5["High"].idxmax()
+
+    # Anchor to the low if established more recently (uptrend anchor), else anchor to high
+    if lowest_idx >= highest_idx:
+        anchor_idx = lowest_idx
+    else:
+        anchor_idx = highest_idx
+
+    # Slice dataset starting from the 5-day anchor bar
+    anchor_data = df.loc[anchor_idx:].copy()
+
+    # Volume-Weighted Average Price calculations
+    anchor_data["TP"] = (
+        anchor_data["High"] + anchor_data["Low"] + anchor_data["Close"]
+    ) / 3.0
+    anchor_data["TPV"] = anchor_data["TP"] * anchor_data["Volume"]
+
+    cum_tpv = anchor_data["TPV"].sum()
+    cum_vol = anchor_data["Volume"].sum()
+
+    if cum_vol == 0:
+        return 0.0
+
+    avwap = cum_tpv / cum_vol
+    current_price = float(df["Close"].iloc[-1])
+
+    # Percentage distance from 5-day Anchored VWAP
+    pct_from_avwap = ((current_price - avwap) / avwap) * 100
+
+    # Scale score for 5-10 day swing responsiveness
+    vwap_score = pct_from_avwap * 2.2
+
+    # Clamp score between -10.0 and +10.0
+    return round(max(min(vwap_score, 10.0), -10.0), 2)
+
+
+# ==============================================================================
+# ALGORITHM 2: SIDEKICK SWING ENGINE (75% WEIGHT & PRIMARY DIRECTION)
+# ==============================================================================
+def calculate_sidekick_algorithm(
+    price: float, sma10: float, sma20: float, rsi: float
+) -> float:
+    """Calculates Sidekick score (-10 to +10) based on SMA10 clearance
+
+    and RSI sweet-spot momentum.
+    """
+    sk_score = 0.0
+    sma10_pct = ((price - sma10) / sma10) * 100
+
+    # Primary factor: Distance clearance percentage above/below SMA10
+    sk_score += sma10_pct * 0.65
+
+    # RSI Momentum Sweet Spot (55 to 68) & Overextended Penalties
+    if 55.0 <= rsi <= 68.0:
+        sk_score += (rsi - 50.0) * 0.3
+    elif rsi > 70.0:
+        sk_score -= (rsi - 65.0) * 0.6
+    else:
+        sk_score += (rsi - 50.0) * 0.1
+
+    # Moving Average Alignment
+    if price > sma10 and sma10 > sma20:
+        sk_score += 1.5
+    elif price < sma10 and sma10 < sma20:
+        sk_score -= 1.5
+
+    return round(max(min(sk_score, 10.0), -10.0), 2)
+
+
+# ==============================================================================
+# DUAL-ALGORITHM BLENDER & DISQUALIFIER
 # ==============================================================================
 def evaluate_symbol(ticker: str):
-    """Evaluates a ticker using reverse-engineered Sidekick rules (75% weight)
-
-    and StockInvest score (25% weight) with conflict disqualification.
-    """
-    tech = fetch_market_data(ticker)
-    if not tech:
+    df = fetch_market_data(ticker)
+    if df is None:
         return None
 
-    price = tech["price"]
-    sma10 = tech["sma10"]
-    sma20 = tech["sma20"]
-    rsi = tech["rsi"]
-    si_score = STOCKINVEST_SCORES.get(ticker, 0.0)
+    close = df["Close"]
+    price = float(close.iloc[-1])
 
-    # 1. Reverse-Engineered Sidekick Criteria (Max Scale: -10 to +10)
-    sk_score = 0.0
+    # Moving average calculations
+    sma10 = (
+        float(close.rolling(window=10).mean().iloc[-1])
+        if len(close) >= 10
+        else price
+    )
+    sma20 = (
+        float(close.rolling(window=20).mean().iloc[-1])
+        if len(close) >= 20
+        else sma10
+    )
+    rsi = round(calculate_rsi(close, 14), 1)
 
-    # Bullish Trend Checks
-    if price > sma10 and sma10 > sma20:
-        sk_score += 5.0
-    elif price > sma10:
-        sk_score += 2.0
+    # Compute both algorithms
+    sk_score = calculate_sidekick_algorithm(price, sma10, sma20, rsi)
+    vwap_score = calculate_anchored_vwap_score(df)
 
-    # RSI Momentum Sweet Spot (55.0 to 67.0)
-    if 55.0 <= rsi <= 67.0:
-        sk_score += 3.5
-    elif 50.0 <= rsi < 55.0 or 67.0 < rsi <= 70.0:
-        sk_score += 1.5
+    # 75% Sidekick + 25% Anchored VWAP Blended Rating
+    final_score = round((sk_score * 0.75) + (vwap_score * 0.25), 2)
 
-    # Price Clearance above SMA10
-    if price > sma10:
-        clearance_pct = ((price - sma10) / sma10) * 100
-        if clearance_pct >= 1.0:
-            sk_score += 1.5
+    # Direct Conflict Disqualification Rule:
+    # If Sidekick calls BUY (>= +1.0) but price is BELOW 5-day AVWAP (<= -1.0),
+    # or Sidekick calls SELL (<= -1.0) but price is ABOVE 5-day AVWAP (>= +1.0) -> DISQUALIFY TO HOLDS
+    is_sk_buy = sk_score >= 1.0
+    is_sk_sell = sk_score <= -1.0
+    is_vwap_buy = vwap_score >= 1.0
+    is_vwap_sell = vwap_score <= -1.0
 
-    # Bearish Trend Checks
-    if rsi <= 25.5:
-        sk_score -= 6.0
-    elif rsi <= 31.0:
-        sk_score -= 4.0
+    has_conflict = (is_sk_buy and is_vwap_sell) or (
+        is_sk_sell and is_vwap_buy
+    )
 
-    if price < sma10 and sma10 < sma20:
-        sk_score -= 4.0
-
-    # Clamp Sidekick score between -10.0 and +10.0
-    sk_score = max(min(sk_score, 10.0), -10.0)
-
-    # 2. Weighted Score Calculation
-    final_score = round((sk_score * 0.75) + (si_score * 0.25), 2)
-
-    # 3. Conflict and Disqualification Check
-    is_sk_buy = sk_score > 2.0
-    is_sk_sell = sk_score < -2.0
-    is_si_buy = si_score > 0.0
-    is_si_sell = si_score < 0.0
-
-    has_conflict = (is_sk_buy and is_si_sell) or (is_sk_sell and is_si_buy)
+    sma10_pct = round(((price - sma10) / sma10) * 100, 1) if sma10 else 0.0
 
     return {
         "ticker": ticker,
-        "score": final_score,
-        "sk_score": sk_score,
-        "si_score": si_score,
-        "rsi": rsi,
         "price": price,
-        "sma10": sma10,
+        "rsi": rsi,
+        "sma10_pct": sma10_pct,
+        "sk_score": sk_score,
+        "vwap_score": vwap_score,
+        "final_score": final_score,
         "has_conflict": has_conflict,
     }
 
 
 def generate_screener_data():
-    """Runs through the ETF universe and categorizes into Buys, Sells, and Holds."""
     buys, sells, holds = [], [], []
 
     for ticker in ETF_UNIVERSE:
@@ -193,56 +211,51 @@ def generate_screener_data():
         if not res:
             continue
 
-        setup_text = f"Price ${res['price']:.2f} | Sidekick: {res['sk_score']} | SI: {res['si_score']}"
+        sign_str = "+" if res["sma10_pct"] >= 0 else ""
+        setup_text = f"{sign_str}{res['sma10_pct']}% vs SMA10 | SK: {res['sk_score']} | VWAP5: {res['vwap_score']}"
 
         item = {
             "ticker": res["ticker"],
-            "score": res["score"],
-            "isBear": res["score"] < 0,
+            "score": res["final_score"],
             "setup": setup_text,
             "rsi": res["rsi"],
         }
 
-        # Conflict override: push divergent picks to Holds
+        # Apply classification and disqualification routing
         if res["has_conflict"]:
             item["setup"] = (
-                f"⚠️ CONFLICT OVERRIDE (SI Score: {res['si_score']})"
+                f"⚠️ DISQUALIFIED (SK: {res['sk_score']} vs VWAP5: {res['vwap_score']})"
             )
             holds.append(item)
-        elif res["score"] > 1.5 and res["si_score"] >= 0:
+        elif res["final_score"] >= 1.5 and res["vwap_score"] >= 0:
             buys.append(item)
-        elif res["score"] < -1.5 and res["si_score"] <= 0:
+        elif res["final_score"] <= -1.5 and res["vwap_score"] <= 0:
             sells.append(item)
         else:
             holds.append(item)
 
-    # Sort results
+    # Sort Buys highest to lowest score; Sells lowest to highest score
     buys.sort(key=lambda x: x["score"], reverse=True)
-    sells.sort(key=lambda x: x["score"]) # Most negative magnitude first
+    sells.sort(key=lambda x: x["score"])
 
     return buys[:5], sells[:5], holds
 
 
 # ==============================================================================
-# HTML BUILDER & FILE OUTPUT
+# INDEX.HTML PUBLISHER (GITHUB PAGES UPDATE)
 # ==============================================================================
 def update_html_file(buys, sells, holds, filepath="index.html"):
-    """Reads index.html and updates the JS data arrays with fresh weighted scores."""
     if not os.path.exists(filepath):
-        print(f"File {filepath} not found. Ensure script runs in repo root.")
+        print(f"File {filepath} not found.")
         return
 
     with open(filepath, "r", encoding="utf-8") as f:
         content = f.read()
 
-    # Convert Python dicts to JavaScript JSON arrays
-    import json
-
     buys_js = f"const buys = {json.dumps(buys, indent=2)};"
     sells_js = f"const sells = {json.dumps(sells, indent=2)};"
     holds_js = f"const holds = {json.dumps(holds, indent=2)};"
 
-    # Replace JS variable definitions in HTML file
     content = re.sub(r"const buys = \[.*?\];", buys_js, content, flags=re.DOTALL)
     content = re.sub(
         r"const sells = \[.*?\];", sells_js, content, flags=re.DOTALL
@@ -255,256 +268,11 @@ def update_html_file(buys, sells, holds, filepath="index.html"):
         f.write(content)
 
     print(
-        f"Successfully updated {filepath} with {len(buys)} Buys, {len(sells)} Sells, and {len(holds)} Holds."
+        f"Updated {filepath}: {len(buys)} Buys, {len(sells)} Sells, {len(holds)} Holds."
     )
 
 
 if __name__ == "__main__":
-    print("Running ETF Screener Engine...")
+    print("Executing 75/25 Sidekick + 5-Day AVWAP Screener Engine...")
     buys, sells, holds = generate_screener_data()
     update_html_file(buys, sells, holds, "index.html")
-    }
-
-    .section-buys { color: #00e676 !important; border-color: #00e676 !important; }
-    .section-holds { color: #ff9100 !important; border-color: #ff9100 !important; }
-    .section-sells { color: #ff1744 !important; border-color: #ff1744 !important; }
-    .section-sectors { color: #00b0ff !important; border-color: #00b0ff !important; }
-
-    .screener-card {
-      margin-bottom: 20px;
-      background-color: #131722 !important;
-    }
-
-    /* Table styling */
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      text-align: left;
-      font-size: 13px;
-      background-color: #131722 !important;
-    }
-
-    thead tr {
-      background-color: #1e222d !important;
-    }
-
-    th {
-      color: #00b0ff !important;
-      padding: 8px;
-      border-bottom: 1px solid #2a2e39;
-      font-weight: bold;
-      background-color: #1e222d !important;
-    }
-
-    tbody tr {
-      background-color: #131722 !important;
-      border-bottom: 1px solid #2a2e39 !important;
-    }
-
-    td {
-      padding: 8px;
-      border-bottom: 1px solid #2a2e39 !important;
-      background-color: #131722 !important;
-      color: #ffffff !important;
-    }
-
-    .ticker-symbol {
-      color: #ffffff !important;
-      font-weight: 800 !important;
-      font-size: 14px !important;
-      display: inline-block !important;
-      letter-spacing: 0.5px;
-    }
-
-    .rank-badge {
-      background-color: #2a2e39 !important;
-      color: #00b0ff !important;
-      font-size: 11px;
-      padding: 2px 6px;
-      border-radius: 4px;
-      font-weight: bold;
-      margin-right: 6px;
-      display: inline-block !important;
-    }
-
-    .badge-top-buy {
-      background-color: #00e676 !important;
-      color: #000000 !important;
-      font-size: 10px;
-      padding: 2px 6px;
-      border-radius: 3px;
-      font-weight: bold;
-      margin-left: 6px;
-      display: inline-block !important;
-    }
-
-    .badge-top-sell {
-      background-color: #ff1744 !important;
-      color: #ffffff !important;
-      font-size: 10px;
-      padding: 2px 6px;
-      border-radius: 3px;
-      font-weight: bold;
-      margin-left: 6px;
-      display: inline-block !important;
-    }
-
-    .badge-winner {
-      background-color: #00e676 !important;
-      color: #000000 !important;
-      font-size: 10px;
-      padding: 2px 6px;
-      border-radius: 3px;
-      font-weight: bold;
-      margin-left: 6px;
-      display: inline-block !important;
-    }
-
-    .setup-desc {
-      color: #b2b9c7 !important;
-      font-weight: 500 !important;
-    }
-
-    .score-val {
-      color: #00e676 !important;
-      font-weight: 800 !important;
-    }
-
-    .score-val-sell {
-      color: #ff1744 !important;
-      font-weight: 800 !important;
-    }
-
-    .disclaimer {
-      font-size: 11px;
-      color: #787b86 !important;
-      text-align: center;
-      margin-top: 15px;
-    }
-  </style>
-</head>
-<body style="background-color: #131722 !important;">
-
-<div id="screener-container">
-  <h2>AlgoTrader Sidekick Screener</h2>
-
-  <div class="screener-card">
-    <h3 class="section-sectors">🌐 TIER 1: SECTOR MOMENTUM RANKINGS</h3>
-    <table id="sectors-table">
-      <thead><tr><th>Sector</th><th>Benchmark</th><th>RSI</th><th>Score</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
-
-  <div class="screener-card">
-    <h3 class="section-buys">🟢 TIER 2: BUYS (5-Day Horizon - Weighted Picks)</h3>
-    <table id="buys-table">
-      <thead><tr><th>Rank & Ticker</th><th>Setup / Action</th><th>RSI</th><th>Score</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
-
-  <div class="screener-card">
-    <h3 class="section-holds">🟡 TIER 2: HOLDS (Confirmation Needed)</h3>
-    <table id="holds-table">
-      <thead><tr><th>Rank & Ticker</th><th>Setup / Action</th><th>RSI</th><th>Score</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
-
-  <div class="screener-card">
-    <h3 class="section-sells">🔴 TIER 2: SELLS / AVOID (Short/Bear Side)</h3>
-    <table id="sells-table">
-      <thead><tr><th>Rank & Ticker</th><th>Setup / Action</th><th>RSI</th><th>Score</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
-
-  <div class="disclaimer">⚠️ This is not financial advice. Leveraged ETFs decay.</div>
-</div>
-
-<script>
-// Computed 75% Sidekick / 25% StockInvest Weighted Results
-const sectorResults = [
-  {"sector": "Technology", "benchmark": "XLK", "rsi": 63, "score": 1.16},
-  {"sector": "Real Estate", "benchmark": "XLRE", "rsi": 60, "score": -1.04},
-  {"sector": "Financials", "benchmark": "XLF", "rsi": 63, "score": -1.13},
-  {"sector": "Materials", "benchmark": "XLB", "rsi": 63, "score": -0.91}
-];
-
-const buys = [
-  {"ticker": "TECL", "score": 8.23, "isBear": false, "setup": "Sidekick #1 / Price > SMA10 ($240.29)", "rsi": 65.5},
-  {"ticker": "TQQQ", "score": 6.75, "isBear": false, "setup": "Sidekick #2 / Price > SMA10 ($78.96)", "rsi": 60.4},
-  {"ticker": "SOXL", "score": 6.10, "isBear": false, "setup": "Sidekick #3 / Price > SMA10 ($153.72)", "rsi": 60.7},
-  {"ticker": "HIBL", "score": 5.25, "isBear": false, "setup": "Sidekick Honorable Mention (Uptrend)", "rsi": 56.0},
-  {"ticker": "DRV", "score": 1.91, "isBear": false, "setup": "StockInvest #1 Buy Rank", "rsi": 68.0},
-  {"ticker": "SDOW", "score": 1.02, "isBear": false, "setup": "StockInvest #3 Buy Rank", "rsi": 62.0},
-  {"ticker": "NVDA", "score": 1.00, "isBear": false, "setup": "StockInvest #4 Buy Rank", "rsi": 64.0},
-  {"ticker": "NVDL", "score": 0.93, "isBear": false, "setup": "StockInvest #5 Buy Rank", "rsi": 63.5}
-];
-
-const holds = [];
-
-const sells = [
-  {"ticker": "FAS", "score": -8.47, "isBear": true, "setup": "Sidekick #1 Sell Pick (RSI Oversold 25.0)", "rsi": 25.0},
-  {"ticker": "DFEN", "score": -6.75, "isBear": true, "setup": "Sidekick #2 Sell Pick (RSI Oversold 25.2)", "rsi": 25.2},
-  {"ticker": "DPST", "score": -6.00, "isBear": true, "setup": "Sidekick #3 Sell Pick (RSI 30.4 / Falling)", "rsi": 30.4},
-  {"ticker": "TMF", "score": -1.80, "isBear": true, "setup": "StockInvest Strong Sell Rank (-7.19)", "rsi": 35.0},
-  {"ticker": "BOIL", "score": -1.45, "isBear": true, "setup": "StockInvest Strong Sell Rank (-5.80)", "rsi": 38.0},
-  {"ticker": "SOXS", "score": -1.43, "isBear": true, "setup": "StockInvest Strong Sell Rank (-5.72)", "rsi": 39.0}
-];
-
-function renderTable(tableId, data, categoryType) {
-  const tbody = document.querySelector("#" + tableId + " tbody");
-  if (!tbody) return;
-  tbody.innerHTML = "";
-
-  if (!data || data.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="4" style="color:#787b86 !important;">No symbols in this category.</td></tr>';
-    return;
-  }
-
-  // Sort by weighted score magnitude
-  if (categoryType === "sells") {
-    data.sort((a, b) => (a.score || 0) - (b.score || 0)); // Most negative first
-  } else {
-    data.sort((a, b) => (b.score || 0) - (a.score || 0)); // Highest positive first
-  }
-
-  data.forEach(function(item, index) {
-    const tr = document.createElement("tr");
-    const rankNum = index + 1;
-    let badge = "";
-
-    if (categoryType === "sector") {
-      if (index === 0) badge = '<span class="badge-winner">TOP SECTOR</span>';
-    } else if (categoryType === "buys") {
-      if (index === 0) badge = '<span class="badge-top-buy">#1 BUY PICK</span>';
-      else if (index === 1) badge = '<span class="badge-top-buy">#2 BUY PICK</span>';
-    } else if (categoryType === "sells") {
-      if (index === 0) badge = '<span class="badge-top-sell">#1 SHORT/SELL</span>';
-      else if (index === 1) badge = '<span class="badge-top-sell">#2 SHORT/SELL</span>';
-    }
-
-    const labelText = item.sector || item.ticker;
-    const rankPrefix = categoryType !== "sector" ? '<span class="rank-badge">#' + rankNum + '</span>' : '';
-    const scoreClass = categoryType === "sells" ? "score-val-sell" : "score-val";
-
-    tr.innerHTML = 
-      '<td>' + rankPrefix + '<span class="ticker-symbol">' + labelText + '</span>' + badge + '</td>' +
-      '<td><span class="setup-desc">' + (categoryType === "sector" ? item.benchmark : item.setup) + '</span></td>' +
-      '<td><span class="setup-desc">' + item.rsi + '</span></td>' +
-      '<td><span class="' + scoreClass + '">' + item.score + '</span></td>';
-    
-    tbody.appendChild(tr);
-  });
-}
-
-renderTable("sectors-table", sectorResults, "sector");
-renderTable("buys-table", buys, "buys");
-renderTable("holds-table", holds, "holds");
-renderTable("sells-table", sells, "sells");
-</script>
-
-</body>
-</html>
