@@ -1,218 +1,164 @@
-import json
-import os
-import numpy as np
-import pandas as pd
-import yfinance as yf
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Algo 7 Market Dashboard</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 16px;
+      background-color: #0f172a;
+      color: #f8fafc;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    .header {
+      margin-bottom: 20px;
+    }
+    .header h1 {
+      margin: 0 0 8px 0;
+      font-size: 1.5rem;
+      color: #38bdf8;
+    }
+    .header p {
+      margin: 0;
+      font-size: 0.875rem;
+      color: #94a3b8;
+    }
+    .status-container {
+      margin-bottom: 16px;
+      font-size: 0.875rem;
+      color: #cbd5e1;
+    }
+    .table-container {
+      overflow-x: auto;
+      border: 1px solid #334155;
+      border-radius: 8px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+    }
+    th, td {
+      padding: 12px 16px;
+      border-bottom: 1px solid #1e293b;
+    }
+    th {
+      background-color: #1e293b;
+      color: #94a3b8;
+      font-weight: 600;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    tr:last-child td {
+      border-bottom: none;
+    }
+    .score-high {
+      color: #4ade80;
+      font-weight: 600;
+    }
+    .score-med {
+      color: #facc15;
+      font-weight: 600;
+    }
+    .score-low {
+      color: #f87171;
+      font-weight: 600;
+    }
+    .error-msg {
+      color: #f87171;
+      padding: 16px;
+      background: #450a0a;
+      border-radius: 6px;
+      display: none;
+    }
+  </style>
+</head>
+<body>
 
-# ==========================================
-# PROPRIETARY CONFIGURATION & ETF UNIVERSE
-# ==========================================
-BULL_ETFS = [
-    "SOXL",
-    "TECL",
-    "TQQQ",
-    "BULZ",
-    "HIBL",
-    "NVDL",
-    "FNGU",
-    "UPRO",
-    "CONL",
-]
-BEAR_ETFS = ["SOXS", "TECS", "SQQQ", "HIBS", "SPXU"]
-NEUTRAL_ETFS = ["USO", "XLE", "RSP", "SPY"]
+  <div class="header">
+    <h1>Algo 7 Swing Trading Dashboard</h1>
+    <p>Automated quantitative ratings & leader tracking</p>
+  </div>
 
-ALL_TICKERS = list(set(BULL_ETFS + BEAR_ETFS + NEUTRAL_ETFS))
+  <div id="status" class="status-container">Loading latest market data...</div>
+  <div id="error" class="error-msg"></div>
 
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>Ticker</th>
+          <th>Algo 7 Score</th>
+          <th>Conviction Grade</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="table-body">
+      </tbody>
+    </table>
+  </div>
 
-# ==========================================
-# SECRET INGREDIENTS (PROPRIETARY ENGINE)
-# ==========================================
-def _get_secret_breadth_regime() -> str:
-    """Calculates short-term market regime via internal broad market momentum."""
-    try:
-        rsp = yf.Ticker("RSP").history(period="1mo")
-        if rsp.empty:
-            return "BULLISH"
+  <script>
+    async function loadScreenerData() {
+      const statusEl = document.getElementById('status');
+      const errorEl = document.getElementById('error');
+      const tableBody = document.getElementById('table-body');
 
-        close = rsp["Close"]
-        ema5 = close.ewm(span=5, adjust=False).mean()
-        ema13 = close.ewm(span=13, adjust=False).mean()
-        macd_line = ema5 - ema13
-        signal_line = macd_line.ewm(span=5, adjust=False).mean()
+      // Attempt loading JSON from both possible paths automatically
+      const paths = ['screener_data.json', 'docs/screener_data.json'];
+      let data = null;
 
-        return (
-            "BULLISH" if macd_line.iloc[-1] > signal_line.iloc[-1] else "BEARISH"
-        )
-    except Exception:
-        return "BULLISH"
+      for (const path of paths) {
+        try {
+          const response = await fetch(path + '?t=' + new Date().getTime());
+          if (response.ok) {
+            data = await response.json();
+            break;
+          }
+        } catch (e) {
+          // Continue to next path candidate
+        }
+      }
 
+      if (!data) {
+        statusEl.style.display = 'none';
+        errorEl.style.display = 'block';
+        errorEl.innerText = 'Unable to load screener data. Please verify workflow execution on GitHub.';
+        return;
+      }
 
-def _get_secret_avwap(df: pd.DataFrame) -> float:
-    """Calculates 5-day anchored volume-weighted fair value."""
-    if len(df) < 5:
-        return df["Close"].iloc[-1]
+      statusEl.innerText = 'Market Regime: ' + (data.market_regime || 'ACTIVE') + ' | Last Updated: ' + (data.last_updated || 'Recent');
 
-    recent_df = df.tail(5)
-    typical_price = (
-        recent_df["High"] + recent_df["Low"] + recent_df["Close"]
-    ) / 3
-    tp_vol = (typical_price * recent_df["Volume"]).sum()
-    total_vol = recent_df["Volume"].sum()
+      const items = data.tickers || data.results || [];
+      tableBody.innerHTML = '';
 
-    return tp_vol / total_vol if total_vol != 0 else df["Close"].iloc[-1]
+      if (items.length === 0) {
+        tableBody.innerHTML = '<tr><td colspan="4" style="text-align:center; color:#94a3b8;">No tickers currently qualified.</td></tr>';
+        return;
+      }
 
+      items.forEach(item => {
+        const row = document.createElement('tr');
+        
+        let scoreClass = 'score-med';
+        if (item.score >= 70) scoreClass = 'score-high';
+        if (item.score < 40) scoreClass = 'score-low';
 
-def _get_secret_rs_roc(
-    df_asset: pd.DataFrame, df_spy: pd.DataFrame, lookback: int = 20
-) -> float:
-    """Calculates relative performance ROC vs benchmark."""
-    try:
-        asset_close = df_asset["Close"].tail(lookback)
-        spy_close = df_spy["Close"].tail(lookback)
-        ratio = asset_close / spy_close
-        return float(((ratio.iloc[-1] - ratio.iloc[0]) / ratio.iloc[0]) * 100)
-    except Exception:
-        return 0.0
-
-
-# ==========================================
-# EVALUATION & OBFUSCATION ENGINE
-# ==========================================
-def evaluate_ticker_opaque(
-    ticker: str, df: pd.DataFrame, df_spy: pd.DataFrame, breadth_regime: str
-) -> dict:
-    if len(df) < 20:
-        return None
-
-    close = df["Close"].iloc[-1]
-
-    # --- Primary Clearance Component (75% Weight) ---
-    sma10 = df["Close"].tail(10).mean()
-
-    # Relative Momentum Assessment
-    delta = df["Close"].diff()
-    gain = delta.where(delta > 0, 0).tail(14).mean()
-    loss = (-delta.where(delta < 0, 0)).tail(14).mean()
-    rs = gain / (loss if loss != 0 else 1e-9)
-    rsi = 100 - (100 / (1 + rs))
-
-    sidekick_bullish = (close > sma10) and (55.0 <= rsi <= 68.0)
-    sidekick_bearish = (close < sma10) or (rsi < 45.0)
-
-    # --- Structural Fair-Value Component (25% Weight) ---
-    avwap_5d = _get_secret_avwap(df)
-    avwap_bullish = close > avwap_5d
-    avwap_bearish = close < avwap_5d
-
-    # --- Disqualification Check ---
-    is_conflicted = (sidekick_bullish and avwap_bearish) or (
-        sidekick_bearish and avwap_bullish
-    )
-
-    # --- Proprietary Rating Math ---
-    raw_score = 0.0
-    if sidekick_bullish:
-        raw_score += 3.75
-    elif sidekick_bearish:
-        raw_score -= 3.75
-
-    if avwap_bullish:
-        raw_score += 1.25
-    else:
-        raw_score -= 1.25
-
-    # Relative Performance Shift
-    rs_roc = _get_secret_rs_roc(df, df_spy)
-    raw_score += 0.5 if rs_roc > 0 else -0.5
-
-    # Participation Multiplier Application
-    multiplier = 1.0
-    if ticker in BULL_ETFS:
-        multiplier = 2.0 if breadth_regime == "BULLISH" else 0.5
-    elif ticker in BEAR_ETFS:
-        multiplier = 2.0 if breadth_regime == "BEARISH" else 0.5
-
-    final_score = np.clip(raw_score * multiplier, -10.0, 10.0)
-
-    # Convert score to user-friendly proprietary conviction grade
-    conviction = "NEUTRAL"
-    if is_conflicted:
-        conviction = "HOLD (CONFLICT)"
-    elif final_score >= 6.0:
-        conviction = "STRONG BUY"
-    elif final_score >= 3.0:
-        conviction = "BUY"
-    elif final_score <= -6.0:
-        conviction = "STRONG BEAR"
-    elif final_score <= -3.0:
-        conviction = "BEAR / REDUCE"
-
-    # SANITIZED PUBLIC DELIVERABLE
-    # (Stripped of exact RSI, AVWAP price, SMA percentages, and RS ratios)
-    return {
-        "ticker": ticker,
-        "price": round(float(close), 2),
-        "algo7_score": round(float(final_score), 1),
-        "conviction": conviction,
-        "is_conflicted": is_conflicted,
+        row.innerHTML = `
+          <td style="font-weight:600;">${item.symbol || item.ticker || 'N/A'}</td>
+          <td class="${scoreClass}">${item.score !== undefined ? item.score : 'N/A'}</td>
+          <td>${item.grade || item.conviction || 'N/A'}</td>
+          <td style="color:#94a3b8;">${item.status || 'Monitored'}</td>
+        `;
+        tableBody.appendChild(row);
+      });
     }
 
+    loadScreenerData();
+  </script>
+</body>
+</html>
 
-# ==========================================
-# PUBLIC PIPELINE EXPORT
-# ==========================================
-def main():
-    breadth_regime = _get_secret_breadth_regime()
-
-    data = yf.download(
-        ALL_TICKERS,
-        period="1mo",
-        interval="1d",
-        group_by="ticker",
-        progress=False,
-    )
-    df_spy = data["SPY"] if "SPY" in data else yf.Ticker("SPY").history("1mo")
-
-    buys = []
-    sells = []
-    holds = []
-
-    for ticker in ALL_TICKERS:
-        if ticker not in data or data[ticker].empty:
-            continue
-
-        res = evaluate_ticker_opaque(
-            ticker, data[ticker].dropna(), df_spy, breadth_regime
-        )
-        if not res:
-            continue
-
-        if res["is_conflicted"] or abs(res["algo7_score"]) < 3.0:
-            holds.append(res)
-        elif res["algo7_score"] >= 3.0:
-            buys.append(res)
-        else:
-            sells.append(res)
-
-    buys = sorted(buys, key=lambda x: x["algo7_score"], reverse=True)
-    sells = sorted(sells, key=lambda x: x["algo7_score"])
-
-    # Output ONLY sanitized metrics to JSON
-    output = {
-        "market_regime": breadth_regime,
-        "top_picks": buys[:3],
-        "top_shorts": sells[:3],
-        "all_ratings": buys + holds + sells,
-    }
-
-    os.makedirs("docs", exist_ok=True)
-    with open("docs/screener_data.json", "w") as f:
-        json.dump(output, f, indent=2)
-
-    print(
-        "Execution complete. Public JSON updated without revealing proprietary indicators."
-    )
-
-
-if __name__ == "__main__":
-    main()
