@@ -1,278 +1,218 @@
-
 import json
 import os
-import re
 import numpy as np
 import pandas as pd
 import yfinance as yf
 
-# ==============================================================================
-# ETF UNIVERSE
-# ==============================================================================
-ETF_UNIVERSE = [
-    # Bullish Leveraged ETFs
+# ==========================================
+# PROPRIETARY CONFIGURATION & ETF UNIVERSE
+# ==========================================
+BULL_ETFS = [
+    "SOXL",
     "TECL",
     "TQQQ",
-    "SOXL",
-    "HIBL",
     "BULZ",
+    "HIBL",
     "NVDL",
-    "NVDA",
-    "UCO",
-    # Bearish Leveraged ETFs
-    "DRV",
-    "SOXS",
-    "TMF",
-    "TECS",
-    "HIBS",
-    "SQQQ",
-    "BERZ",
-    "LABD",
-    "SDOW",
-    # Commodities / Other
-    "USO",
-    "BOIL",
-    "UNG",
-    "XLE",
+    "FNGU",
+    "UPRO",
+    "CONL",
 ]
+BEAR_ETFS = ["SOXS", "TECS", "SQQQ", "HIBS", "SPXU"]
+NEUTRAL_ETFS = ["USO", "XLE", "RSP", "SPY"]
+
+ALL_TICKERS = list(set(BULL_ETFS + BEAR_ETFS + NEUTRAL_ETFS))
 
 
-# ==============================================================================
-# TECHNICAL INDICATOR ENGINE
-# ==============================================================================
-def calculate_rsi(series: pd.Series, period: int = 14) -> float:
-    """Calculates standard 14-day Relative Strength Index (RSI)."""
-    delta = series.diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = -delta.where(delta < 0, 0.0)
-
-    avg_gain = gain.ewm(alpha=1 / period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1 / period, adjust=False).mean()
-
-    rs = avg_gain / avg_loss
-    return float(100 - (100 / (1 + rs)).iloc[-1])
-
-
-def fetch_market_data(ticker: str):
-    """Fetches 15 days of historical price and volume data via yfinance."""
+# ==========================================
+# SECRET INGREDIENTS (PROPRIETARY ENGINE)
+# ==========================================
+def _get_secret_breadth_regime() -> str:
+    """Calculates short-term market regime via internal broad market momentum."""
     try:
-        data = yf.Ticker(ticker).history(period="15d")
-        if data.empty or len(data) < 10:
-            return None
-        return data
-    except Exception as e:
-        print(f"Error fetching data for {ticker}: {e}")
-        return None
+        rsp = yf.Ticker("RSP").history(period="1mo")
+        if rsp.empty:
+            return "BULLISH"
+
+        close = rsp["Close"]
+        ema5 = close.ewm(span=5, adjust=False).mean()
+        ema13 = close.ewm(span=13, adjust=False).mean()
+        macd_line = ema5 - ema13
+        signal_line = macd_line.ewm(span=5, adjust=False).mean()
+
+        return (
+            "BULLISH" if macd_line.iloc[-1] > signal_line.iloc[-1] else "BEARISH"
+        )
+    except Exception:
+        return "BULLISH"
 
 
-# ==============================================================================
-# ALGORITHM 1: 5-DAY ANCHORED VWAP (25% WEIGHT & INLINE CONFIRMATION)
-# ==============================================================================
-def calculate_anchored_vwap_score(df: pd.DataFrame) -> float:
-    """Anchors VWAP to the 5-day swing pivot (lowest low or highest high)
+def _get_secret_avwap(df: pd.DataFrame) -> float:
+    """Calculates 5-day anchored volume-weighted fair value."""
+    if len(df) < 5:
+        return df["Close"].iloc[-1]
 
-    to establish institutional fair value for 5-to-10 day swing setups.
-    """
-    recent_5 = df.tail(5)
+    recent_df = df.tail(5)
+    typical_price = (
+        recent_df["High"] + recent_df["Low"] + recent_df["Close"]
+    ) / 3
+    tp_vol = (typical_price * recent_df["Volume"]).sum()
+    total_vol = recent_df["Volume"].sum()
 
-    # Find the extreme low and high within the last 5 trading sessions
-    lowest_idx = recent_5["Low"].idxmin()
-    highest_idx = recent_5["High"].idxmax()
+    return tp_vol / total_vol if total_vol != 0 else df["Close"].iloc[-1]
 
-    # Anchor to the low if established more recently (uptrend anchor), else anchor to high
-    if lowest_idx >= highest_idx:
-        anchor_idx = lowest_idx
-    else:
-        anchor_idx = highest_idx
 
-    # Slice dataset starting from the 5-day anchor bar
-    anchor_data = df.loc[anchor_idx:].copy()
-
-    # Volume-Weighted Average Price calculations
-    anchor_data["TP"] = (
-        anchor_data["High"] + anchor_data["Low"] + anchor_data["Close"]
-    ) / 3.0
-    anchor_data["TPV"] = anchor_data["TP"] * anchor_data["Volume"]
-
-    cum_tpv = anchor_data["TPV"].sum()
-    cum_vol = anchor_data["Volume"].sum()
-
-    if cum_vol == 0:
+def _get_secret_rs_roc(
+    df_asset: pd.DataFrame, df_spy: pd.DataFrame, lookback: int = 20
+) -> float:
+    """Calculates relative performance ROC vs benchmark."""
+    try:
+        asset_close = df_asset["Close"].tail(lookback)
+        spy_close = df_spy["Close"].tail(lookback)
+        ratio = asset_close / spy_close
+        return float(((ratio.iloc[-1] - ratio.iloc[0]) / ratio.iloc[0]) * 100)
+    except Exception:
         return 0.0
 
-    avwap = cum_tpv / cum_vol
-    current_price = float(df["Close"].iloc[-1])
 
-    # Percentage distance from 5-day Anchored VWAP
-    pct_from_avwap = ((current_price - avwap) / avwap) * 100
-
-    # Scale score for 5-10 day swing responsiveness
-    vwap_score = pct_from_avwap * 2.2
-
-    # Clamp score between -10.0 and +10.0
-    return round(max(min(vwap_score, 10.0), -10.0), 2)
-
-
-# ==============================================================================
-# ALGORITHM 2: SIDEKICK SWING ENGINE (75% WEIGHT & PRIMARY DIRECTION)
-# ==============================================================================
-def calculate_sidekick_algorithm(
-    price: float, sma10: float, sma20: float, rsi: float
-) -> float:
-    """Calculates Sidekick score (-10 to +10) based on SMA10 clearance
-
-    and RSI sweet-spot momentum.
-    """
-    sk_score = 0.0
-    sma10_pct = ((price - sma10) / sma10) * 100
-
-    # Primary factor: Distance clearance percentage above/below SMA10
-    sk_score += sma10_pct * 0.65
-
-    # RSI Momentum Sweet Spot (55 to 68) & Overextended Penalties
-    if 55.0 <= rsi <= 68.0:
-        sk_score += (rsi - 50.0) * 0.3
-    elif rsi > 70.0:
-        sk_score -= (rsi - 65.0) * 0.6
-    else:
-        sk_score += (rsi - 50.0) * 0.1
-
-    # Moving Average Alignment
-    if price > sma10 and sma10 > sma20:
-        sk_score += 1.5
-    elif price < sma10 and sma10 < sma20:
-        sk_score -= 1.5
-
-    return round(max(min(sk_score, 10.0), -10.0), 2)
-
-
-# ==============================================================================
-# DUAL-ALGORITHM BLENDER & DISQUALIFIER
-# ==============================================================================
-def evaluate_symbol(ticker: str):
-    df = fetch_market_data(ticker)
-    if df is None:
+# ==========================================
+# EVALUATION & OBFUSCATION ENGINE
+# ==========================================
+def evaluate_ticker_opaque(
+    ticker: str, df: pd.DataFrame, df_spy: pd.DataFrame, breadth_regime: str
+) -> dict:
+    if len(df) < 20:
         return None
 
-    close = df["Close"]
-    price = float(close.iloc[-1])
+    close = df["Close"].iloc[-1]
 
-    # Moving average calculations
-    sma10 = (
-        float(close.rolling(window=10).mean().iloc[-1])
-        if len(close) >= 10
-        else price
-    )
-    sma20 = (
-        float(close.rolling(window=20).mean().iloc[-1])
-        if len(close) >= 20
-        else sma10
-    )
-    rsi = round(calculate_rsi(close, 14), 1)
+    # --- Primary Clearance Component (75% Weight) ---
+    sma10 = df["Close"].tail(10).mean()
 
-    # Compute both algorithms
-    sk_score = calculate_sidekick_algorithm(price, sma10, sma20, rsi)
-    vwap_score = calculate_anchored_vwap_score(df)
+    # Relative Momentum Assessment
+    delta = df["Close"].diff()
+    gain = delta.where(delta > 0, 0).tail(14).mean()
+    loss = (-delta.where(delta < 0, 0)).tail(14).mean()
+    rs = gain / (loss if loss != 0 else 1e-9)
+    rsi = 100 - (100 / (1 + rs))
 
-    # 75% Sidekick + 25% Anchored VWAP Blended Rating
-    final_score = round((sk_score * 0.75) + (vwap_score * 0.25), 2)
+    sidekick_bullish = (close > sma10) and (55.0 <= rsi <= 68.0)
+    sidekick_bearish = (close < sma10) or (rsi < 45.0)
 
-    # Direct Conflict Disqualification Rule:
-    # If Sidekick calls BUY (>= +1.0) but price is BELOW 5-day AVWAP (<= -1.0),
-    # or Sidekick calls SELL (<= -1.0) but price is ABOVE 5-day AVWAP (>= +1.0) -> DISQUALIFY TO HOLDS
-    is_sk_buy = sk_score >= 1.0
-    is_sk_sell = sk_score <= -1.0
-    is_vwap_buy = vwap_score >= 1.0
-    is_vwap_sell = vwap_score <= -1.0
+    # --- Structural Fair-Value Component (25% Weight) ---
+    avwap_5d = _get_secret_avwap(df)
+    avwap_bullish = close > avwap_5d
+    avwap_bearish = close < avwap_5d
 
-    has_conflict = (is_sk_buy and is_vwap_sell) or (
-        is_sk_sell and is_vwap_buy
+    # --- Disqualification Check ---
+    is_conflicted = (sidekick_bullish and avwap_bearish) or (
+        sidekick_bearish and avwap_bullish
     )
 
-    sma10_pct = round(((price - sma10) / sma10) * 100, 1) if sma10 else 0.0
+    # --- Proprietary Rating Math ---
+    raw_score = 0.0
+    if sidekick_bullish:
+        raw_score += 3.75
+    elif sidekick_bearish:
+        raw_score -= 3.75
 
+    if avwap_bullish:
+        raw_score += 1.25
+    else:
+        raw_score -= 1.25
+
+    # Relative Performance Shift
+    rs_roc = _get_secret_rs_roc(df, df_spy)
+    raw_score += 0.5 if rs_roc > 0 else -0.5
+
+    # Participation Multiplier Application
+    multiplier = 1.0
+    if ticker in BULL_ETFS:
+        multiplier = 2.0 if breadth_regime == "BULLISH" else 0.5
+    elif ticker in BEAR_ETFS:
+        multiplier = 2.0 if breadth_regime == "BEARISH" else 0.5
+
+    final_score = np.clip(raw_score * multiplier, -10.0, 10.0)
+
+    # Convert score to user-friendly proprietary conviction grade
+    conviction = "NEUTRAL"
+    if is_conflicted:
+        conviction = "HOLD (CONFLICT)"
+    elif final_score >= 6.0:
+        conviction = "STRONG BUY"
+    elif final_score >= 3.0:
+        conviction = "BUY"
+    elif final_score <= -6.0:
+        conviction = "STRONG BEAR"
+    elif final_score <= -3.0:
+        conviction = "BEAR / REDUCE"
+
+    # SANITIZED PUBLIC DELIVERABLE
+    # (Stripped of exact RSI, AVWAP price, SMA percentages, and RS ratios)
     return {
         "ticker": ticker,
-        "price": price,
-        "rsi": rsi,
-        "sma10_pct": sma10_pct,
-        "sk_score": sk_score,
-        "vwap_score": vwap_score,
-        "final_score": final_score,
-        "has_conflict": has_conflict,
+        "price": round(float(close), 2),
+        "algo7_score": round(float(final_score), 1),
+        "conviction": conviction,
+        "is_conflicted": is_conflicted,
     }
 
 
-def generate_screener_data():
-    buys, sells, holds = [], [], []
+# ==========================================
+# PUBLIC PIPELINE EXPORT
+# ==========================================
+def main():
+    breadth_regime = _get_secret_breadth_regime()
 
-    for ticker in ETF_UNIVERSE:
-        res = evaluate_symbol(ticker)
+    data = yf.download(
+        ALL_TICKERS,
+        period="1mo",
+        interval="1d",
+        group_by="ticker",
+        progress=False,
+    )
+    df_spy = data["SPY"] if "SPY" in data else yf.Ticker("SPY").history("1mo")
+
+    buys = []
+    sells = []
+    holds = []
+
+    for ticker in ALL_TICKERS:
+        if ticker not in data or data[ticker].empty:
+            continue
+
+        res = evaluate_ticker_opaque(
+            ticker, data[ticker].dropna(), df_spy, breadth_regime
+        )
         if not res:
             continue
 
-        sign_str = "+" if res["sma10_pct"] >= 0 else ""
-        setup_text = f"{sign_str}{res['sma10_pct']}% vs SMA10 | SK: {res['sk_score']} | VWAP5: {res['vwap_score']}"
-
-        item = {
-            "ticker": res["ticker"],
-            "score": res["final_score"],
-            "setup": setup_text,
-            "rsi": res["rsi"],
-        }
-
-        # Apply classification and disqualification routing
-        if res["has_conflict"]:
-            item["setup"] = (
-                f"⚠️ DISQUALIFIED (SK: {res['sk_score']} vs VWAP5: {res['vwap_score']})"
-            )
-            holds.append(item)
-        elif res["final_score"] >= 1.5 and res["vwap_score"] >= 0:
-            buys.append(item)
-        elif res["final_score"] <= -1.5 and res["vwap_score"] <= 0:
-            sells.append(item)
+        if res["is_conflicted"] or abs(res["algo7_score"]) < 3.0:
+            holds.append(res)
+        elif res["algo7_score"] >= 3.0:
+            buys.append(res)
         else:
-            holds.append(item)
+            sells.append(res)
 
-    # Sort Buys highest to lowest score; Sells lowest to highest score
-    buys.sort(key=lambda x: x["score"], reverse=True)
-    sells.sort(key=lambda x: x["score"])
+    buys = sorted(buys, key=lambda x: x["algo7_score"], reverse=True)
+    sells = sorted(sells, key=lambda x: x["algo7_score"])
 
-    return buys[:5], sells[:5], holds
+    # Output ONLY sanitized metrics to JSON
+    output = {
+        "market_regime": breadth_regime,
+        "top_picks": buys[:3],
+        "top_shorts": sells[:3],
+        "all_ratings": buys + holds + sells,
+    }
 
-
-# ==============================================================================
-# INDEX.HTML PUBLISHER (GITHUB PAGES UPDATE)
-# ==============================================================================
-def update_html_file(buys, sells, holds, filepath="index.html"):
-    if not os.path.exists(filepath):
-        print(f"File {filepath} not found.")
-        return
-
-    with open(filepath, "r", encoding="utf-8") as f:
-        content = f.read()
-
-    buys_js = f"const buys = {json.dumps(buys, indent=2)};"
-    sells_js = f"const sells = {json.dumps(sells, indent=2)};"
-    holds_js = f"const holds = {json.dumps(holds, indent=2)};"
-
-    content = re.sub(r"const buys = \[.*?\];", buys_js, content, flags=re.DOTALL)
-    content = re.sub(
-        r"const sells = \[.*?\];", sells_js, content, flags=re.DOTALL
-    )
-    content = re.sub(
-        r"const holds = \[.*?\];", holds_js, content, flags=re.DOTALL
-    )
-
-    with open(filepath, "w", encoding="utf-8") as f:
-        f.write(content)
+    os.makedirs("docs", exist_ok=True)
+    with open("docs/screener_data.json", "w") as f:
+        json.dump(output, f, indent=2)
 
     print(
-        f"Updated {filepath}: {len(buys)} Buys, {len(sells)} Sells, {len(holds)} Holds."
+        "Execution complete. Public JSON updated without revealing proprietary indicators."
     )
 
 
 if __name__ == "__main__":
-    print("Executing 75/25 Sidekick + 5-Day AVWAP Screener Engine...")
-    buys, sells, holds = generate_screener_data()
-    update_html_file(buys, sells, holds, "index.html")
+    main()
