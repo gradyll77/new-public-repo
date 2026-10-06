@@ -1,0 +1,863 @@
+import json
+import os
+import time
+import numpy as np
+import pandas as pd
+import yfinance as yf
+
+# =====================================================================
+# LEVERAGED ETF SCANNER
+# =====================================================================
+
+MIN_DAILY_VOLUME = 300_000
+HISTORY_PERIOD = "6mo"
+
+# Include both LONG and INVERSE leveraged funds
+INCLUDE_INVERSE = True
+
+# Only accept these leverage levels
+ALLOWED_LEVERAGE = ["2X", "3X", "2X LONG", "3X LONG",
+                    "-2X", "-3X", "2X SHORT", "3X SHORT"]
+
+# =====================================================================
+# STEP 1 — LEVERAGED ETF UNIVERSE
+# =====================================================================
+
+# Yahoo ETF screener can return up to 250 results per query.
+# We query the ETF universe and then identify leveraged funds
+# from their names/descriptions.
+
+def get_leveraged_etf_universe():
+
+    print("Downloading ETF universe from Yahoo Finance...")
+
+    try:
+        query = yf.ETFQuery(
+            'and',
+            [
+                yf.ETFQuery(
+                    'or',
+                    [
+                        yf.ETFQuery('eq', ['fundFamily', 'Direxion']),
+                        yf.ETFQuery('eq', ['fundFamily', 'ProShares']),
+                        yf.ETFQuery('eq', ['fundFamily', 'GraniteShares']),
+                        yf.ETFQuery('eq', ['fundFamily', 'Defiance']),
+                        yf.ETFQuery('eq', ['fundFamily', 'MicroSectors']),
+                        yf.ETFQuery('eq', ['fundFamily', 'T-Rex']),
+                        yf.ETFQuery('eq', ['fundFamily', 'Roundhill']),
+                    ]
+                )
+            ]
+        )
+
+        data = yf.screen(
+            query,
+            offset=0,
+            size=250,
+            sortField="dayvolume",
+            sortAsc=False
+        )
+
+        quotes = data.get("quotes", [])
+
+        tickers = []
+
+        for item in quotes:
+
+            symbol = item.get("symbol", "")
+            name = item.get("longName", "") or item.get("shortName", "")
+
+            text = f"{symbol} {name}".upper()
+
+            # Look for 2X / 3X leverage terminology
+            leveraged = any(
+                x in text
+                for x in [
+                    "2X",
+                    "3X",
+                    "2X LONG",
+                    "3X LONG",
+                    "2X SHORT",
+                    "3X SHORT",
+                    "ULTRA",
+                    "BULL",
+                    "BEAR"
+                ]
+            )
+
+            if not leveraged:
+                continue
+
+            # Exclude inverse if requested
+            if not INCLUDE_INVERSE:
+                if any(
+                    x in text
+                    for x in [
+                        "BEAR",
+                        "SHORT",
+                        "INVERSE",
+                        "-2X",
+                        "-3X"
+                    ]
+                ):
+                    continue
+
+            tickers.append(
+                {
+                    "symbol": symbol,
+                    "name": name,
+                    "volume": item.get("dayVolume", 0)
+                }
+            )
+
+        return tickers
+
+    except Exception as e:
+
+        print("ETF screener error:", e)
+
+        return []
+
+
+# =====================================================================
+# FALLBACK / CORE LEVERAGED ETF LIST
+#
+# This makes the scanner more reliable if Yahoo changes its screener.
+# Add new funds here when necessary.
+# =====================================================================
+
+CORE_LEVERAGED_ETFS = [
+
+    # ---------------------------------------------------------------
+    # SEMICONDUCTORS / TECHNOLOGY
+    # ---------------------------------------------------------------
+
+    "SOXL",
+    "SOXS",
+    "USD",
+
+    "TECL",
+    "TECS",
+
+    "TQQQ",
+    "SQQQ",
+
+    "BULZ",
+    "BERZ",
+
+    "HIBL",
+    "HIBS",
+
+    "WEBL",
+    "WEBS",
+
+    "LABU",
+    "LABD",
+
+    # ---------------------------------------------------------------
+    # INDEX / BROAD MARKET
+    # ---------------------------------------------------------------
+
+    "UPRO",
+    "SPXU",
+
+    "TNA",
+    "TZA",
+
+    "UDOW",
+    "SDOW",
+
+    "URTY",
+    "SRTY",
+
+    # ---------------------------------------------------------------
+    # ENERGY / OIL / GAS
+    # ---------------------------------------------------------------
+
+    "ERX",
+    "ERY",
+
+    "GUSH",
+    "DRIP",
+
+    "UCO",
+    "SCO",
+
+    "BOIL",
+    "KOLD",
+
+    "OILU",
+    "OILD",
+
+    # ---------------------------------------------------------------
+    # METALS / MINING
+    # ---------------------------------------------------------------
+
+    "AGQ",
+    "ZSL",
+
+    "GDXU",
+    "GDXD",
+
+    "JNUG",
+    "JDST",
+
+    "NUGT",
+    "DUST",
+
+    # ---------------------------------------------------------------
+    # REAL ESTATE
+    # ---------------------------------------------------------------
+
+    "DRN",
+    "DRV",
+
+    # ---------------------------------------------------------------
+    # TREASURIES / BONDS
+    # ---------------------------------------------------------------
+
+    "TMF",
+    "TMV",
+
+    # ---------------------------------------------------------------
+    # VOLATILITY
+    # ---------------------------------------------------------------
+
+    "UVIX",
+    "UVXY",
+    "SVIX",
+
+    # ---------------------------------------------------------------
+    # SINGLE STOCK / CRYPTO
+    # ---------------------------------------------------------------
+
+    "MSTU",
+    "MSTX",
+    "MSTP",
+
+    "CONL",
+
+    "BITX",
+
+    "TSLL",
+    "TSLQ",
+
+    "NVDL",
+    "NVD",
+
+    "PTIR",
+
+    "AMDL",
+    "AMZU",
+    "AMZZ",
+
+    "FBL",
+
+    "GGLL",
+    "GGLS",
+
+    "MSFL",
+
+    "AAPU",
+    "AAPD",
+
+    "MUU",
+    "MULL",
+
+    "AVGU",
+
+    "IRE",
+
+    "IREN",
+
+    "COIN",
+
+    "HOOD",
+
+    "MARA",
+
+    "MRAL",
+
+    # ---------------------------------------------------------------
+    # OTHER HIGH-VOLUME LEVERAGED FUNDS
+    # ---------------------------------------------------------------
+
+    "FNGU",
+    "FNGD",
+
+    "SOXL",
+    "SOXS",
+
+    "CURE",
+    "PILL",
+
+    "FAS",
+    "FAZ",
+
+    "DUSL",
+    "DOZR",
+
+    "NAIL",
+    "DRV",
+
+    "MIDU",
+    "MIDZ",
+
+    "RETL",
+    "REKT",
+
+    "HIBL",
+    "HIBS"
+]
+
+
+# =====================================================================
+# STEP 2 — COMBINE DYNAMIC + CORE UNIVERSE
+# =====================================================================
+
+def build_universe():
+
+    dynamic = get_leveraged_etf_universe()
+
+    symbols = set(CORE_LEVERAGED_ETFS)
+
+    for item in dynamic:
+        symbols.add(item["symbol"])
+
+    symbols = sorted(symbols)
+
+    print(f"Total candidate leveraged ETFs: {len(symbols)}")
+
+    return symbols
+
+
+# =====================================================================
+# STEP 3 — VOLUME FILTER
+# =====================================================================
+
+def volume_filter(tickers):
+
+    qualified = []
+
+    print("\nChecking daily volume...")
+
+    for ticker in tickers:
+
+        try:
+
+            df = yf.Ticker(ticker).history(
+                period="5d",
+                interval="1d"
+            )
+
+            if df.empty:
+                continue
+
+            # Most recent completed trading day
+            latest_volume = int(df["Volume"].iloc[-1])
+
+            # 5-day average volume
+            avg_volume = float(df["Volume"].tail(5).mean())
+
+            if latest_volume >= MIN_DAILY_VOLUME:
+
+                qualified.append(
+                    {
+                        "symbol": ticker,
+                        "daily_volume": latest_volume,
+                        "avg_volume_5d": round(avg_volume)
+                    }
+                )
+
+                print(
+                    f"{ticker:8} "
+                    f"Volume: {latest_volume:>12,} "
+                    f"5D Avg: {avg_volume:>12,.0f}"
+                )
+
+        except Exception as e:
+
+            print(f"Volume error {ticker}: {e}")
+
+    return qualified
+
+
+# =====================================================================
+# MARKET BREADTH
+# =====================================================================
+
+BREADTH_TICKER = "^GSPC"
+
+
+def get_market_breadth():
+
+    try:
+
+        spy = yf.Ticker(BREADTH_TICKER).history(
+            period="1y"
+        )
+
+        if spy.empty or len(spy) < 200:
+
+            return "NEUTRAL", 1.0
+
+        current_price = spy["Close"].iloc[-1]
+
+        sma200 = (
+            spy["Close"]
+            .rolling(200)
+            .mean()
+            .iloc[-1]
+        )
+
+        if current_price > sma200:
+
+            return "BULLISH", 1.15
+
+        else:
+
+            return "BEARISH", 0.85
+
+    except Exception:
+
+        return "NEUTRAL", 1.0
+
+
+# =====================================================================
+# ALGO 7 SCORE
+# =====================================================================
+
+def calculate_algo_score(df, breadth_multiplier):
+
+    if len(df) < 50:
+
+        return 0, "DISQUALIFIED", "Insufficient Data"
+
+    df = df.copy()
+
+    # ---------------------------------------------------------------
+    # VWAP
+    # ---------------------------------------------------------------
+
+    df["Typical_Price"] = (
+        df["High"]
+        + df["Low"]
+        + df["Close"]
+    ) / 3
+
+    df["PV"] = (
+        df["Typical_Price"]
+        * df["Volume"]
+    )
+
+    vwap_20 = (
+        df["PV"].rolling(20).sum()
+        /
+        df["Volume"].rolling(20).sum()
+    )
+
+    current_vwap = vwap_20.iloc[-1]
+
+    current_close = df["Close"].iloc[-1]
+
+    # ---------------------------------------------------------------
+    # MOVING AVERAGES
+    # ---------------------------------------------------------------
+
+    sma20 = (
+        df["Close"]
+        .rolling(20)
+        .mean()
+        .iloc[-1]
+    )
+
+    sma50 = (
+        df["Close"]
+        .rolling(50)
+        .mean()
+        .iloc[-1]
+    )
+
+    # ---------------------------------------------------------------
+    # SCORE
+    # ---------------------------------------------------------------
+
+    base_score = 0
+
+    # VWAP
+    if current_close > current_vwap:
+
+        vwap_dist = (
+            current_close - current_vwap
+        ) / current_vwap
+
+        if 0.005 <= vwap_dist <= 0.08:
+
+            base_score += 35
+
+        elif vwap_dist > 0.08:
+
+            base_score += 20
+
+        else:
+
+            base_score += 25
+
+    else:
+
+        base_score += 5
+
+    # Moving averages
+    if current_close > sma20 > sma50:
+
+        base_score += 35
+
+    elif current_close > sma20:
+
+        base_score += 20
+
+    elif current_close > sma50:
+
+        base_score += 10
+
+    # Volume
+    vol_sma20 = (
+        df["Volume"]
+        .rolling(20)
+        .mean()
+        .iloc[-1]
+    )
+
+    if df["Volume"].iloc[-1] > vol_sma20 * 1.2:
+
+        base_score += 30
+
+    elif df["Volume"].iloc[-1] > vol_sma20:
+
+        base_score += 15
+
+    # Breadth multiplier
+    final_score = int(
+        round(
+            base_score
+            * breadth_multiplier
+        )
+    )
+
+    final_score = max(
+        0,
+        min(100, final_score)
+    )
+
+    # ---------------------------------------------------------------
+    # GRADE
+    # ---------------------------------------------------------------
+
+    if final_score >= 75:
+
+        grade = "HIGH CONVICTION"
+        status = "BULLISH LEAD"
+
+    elif final_score >= 50:
+
+        grade = "MODERATE"
+        status = "WATCHLIST"
+
+    else:
+
+        grade = "WEAK"
+        status = "AVOID / CASH"
+
+    return final_score, grade, status
+
+
+# =====================================================================
+# MAIN PIPELINE
+# =====================================================================
+
+def run_pipeline():
+
+    print("=" * 70)
+    print("LEVERAGED ETF MARKET SCANNER")
+    print("=" * 70)
+
+    # ---------------------------------------------------------------
+    # Build universe
+    # ---------------------------------------------------------------
+
+    universe = build_universe()
+
+    # ---------------------------------------------------------------
+    # Apply 300K volume filter
+    # ---------------------------------------------------------------
+
+    qualified = volume_filter(universe)
+
+    qualified_symbols = [
+        x["symbol"]
+        for x in qualified
+    ]
+
+    print("\n")
+    print(
+        f"Funds passing {MIN_DAILY_VOLUME:,} "
+        f"share volume filter: {len(qualified_symbols)}"
+    )
+
+    # ---------------------------------------------------------------
+    # Market breadth
+    # ---------------------------------------------------------------
+
+    breadth_regime, breadth_mult = (
+        get_market_breadth()
+    )
+
+    print(
+        f"\nMarket Breadth: "
+        f"{breadth_regime}"
+    )
+
+    print(
+        f"Breadth Multiplier: "
+        f"{breadth_mult}"
+    )
+
+    # ---------------------------------------------------------------
+    # Analyze each ETF
+    # ---------------------------------------------------------------
+
+    results = []
+
+    for ticker in qualified_symbols:
+
+        try:
+
+            print(f"Analyzing {ticker}...")
+
+            df = yf.Ticker(ticker).history(
+                period=HISTORY_PERIOD
+            )
+
+            if df.empty or len(df) < 50:
+
+                continue
+
+            score, grade, status = (
+                calculate_algo_score(
+                    df,
+                    breadth_mult
+                )
+            )
+
+            latest_close = float(
+                df["Close"].iloc[-1]
+            )
+
+            avg_volume = float(
+                df["Volume"]
+                .tail(20)
+                .mean()
+            )
+
+            latest_volume = int(
+                df["Volume"].iloc[-1]
+            )
+
+            # 5-day price momentum
+            momentum_5d = (
+                (
+                    df["Close"].iloc[-1]
+                    /
+                    df["Close"].iloc[-6]
+                )
+                - 1
+            ) * 100
+
+            # Distance from 20-day SMA
+            sma20 = (
+                df["Close"]
+                .rolling(20)
+                .mean()
+                .iloc[-1]
+            )
+
+            distance_sma20 = (
+                (
+                    latest_close
+                    /
+                    sma20
+                )
+                - 1
+            ) * 100
+
+            results.append(
+                {
+                    "symbol": ticker,
+
+                    "score": score,
+
+                    "grade": grade,
+
+                    "status": status,
+
+                    "price": round(
+                        latest_close,
+                        2
+                    ),
+
+                    "volume": latest_volume,
+
+                    "avg_volume_20d": round(
+                        avg_volume
+                    ),
+
+                    "momentum_5d_pct": round(
+                        momentum_5d,
+                        2
+                    ),
+
+                    "distance_sma20_pct": round(
+                        distance_sma20,
+                        2
+                    )
+                }
+            )
+
+            time.sleep(0.10)
+
+        except Exception as e:
+
+            print(
+                f"Error processing "
+                f"{ticker}: {e}"
+            )
+
+    # ---------------------------------------------------------------
+    # Rank
+    # ---------------------------------------------------------------
+
+    results.sort(
+        key=lambda x: x["score"],
+        reverse=True
+    )
+
+    # ---------------------------------------------------------------
+    # Add ranking
+    # ---------------------------------------------------------------
+
+    for i, item in enumerate(
+        results,
+        start=1
+    ):
+
+        item["rank"] = i
+
+    # ---------------------------------------------------------------
+    # Output
+    # ---------------------------------------------------------------
+
+    output_payload = {
+
+        "scanner": "Leveraged ETF Algo 7",
+
+        "minimum_volume": MIN_DAILY_VOLUME,
+
+        "universe_size": len(universe),
+
+        "qualified_funds": len(results),
+
+        "market_regime": breadth_regime,
+
+        "breadth_multiplier": breadth_mult,
+
+        "last_updated": (
+            pd.Timestamp.now(tz="UTC")
+            .strftime(
+                "%Y-%m-%d %H:%M UTC"
+            )
+        ),
+
+        "tickers": results
+    }
+
+    # ---------------------------------------------------------------
+    # Save JSON
+    # ---------------------------------------------------------------
+
+    os.makedirs(
+        "docs",
+        exist_ok=True
+    )
+
+    with open(
+        "docs/screener_data.json",
+        "w"
+    ) as f:
+
+        json.dump(
+            output_payload,
+            f,
+            indent=2
+        )
+
+    with open(
+        "screener_data.json",
+        "w"
+    ) as f:
+
+        json.dump(
+            output_payload,
+            f,
+            indent=2
+        )
+
+    # ---------------------------------------------------------------
+    # Console leaderboard
+    # ---------------------------------------------------------------
+
+    print("\n")
+    print("=" * 90)
+    print("LEVERAGED ETF LEADERBOARD")
+    print("=" * 90)
+
+    print(
+        f"{'Rank':<6}"
+        f"{'Ticker':<10}"
+        f"{'Score':<8}"
+        f"{'Volume':<15}"
+        f"{'5D %':<10}"
+        f"{'SMA20 %':<10}"
+        f"{'Status'}"
+    )
+
+    print("-" * 90)
+
+    for x in results:
+
+        print(
+            f"{x['rank']:<6}"
+            f"{x['symbol']:<10}"
+            f"{x['score']:<8}"
+            f"{x['volume']:<15,}"
+            f"{x['momentum_5d_pct']:<10.2f}"
+            f"{x['distance_sma20_pct']:<10.2f}"
+            f"{x['status']}"
+        )
+
+    print("=" * 90)
+
+    print(
+        f"\nCompleted."
+        f"\nCandidates: {len(universe)}"
+        f"\nPassed volume: {len(results)}"
+        f"\nMinimum volume: {MIN_DAILY_VOLUME:,}"
+    )
+
+
+# =====================================================================
+# RUN
+# =====================================================================
+
+if __name__ == "__main__":
+
+    run_pipeline()
