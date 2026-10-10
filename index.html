@@ -2,37 +2,35 @@ import json
 import os
 import time
 import re
-
 import numpy as np
 import pandas as pd
 import yfinance as yf
 
 
 # ============================================================
-# ALGO 7 — LEVERAGED ETF SCANNER
-# ============================================================
+# ALGO 7 — 5-DAY LEVERAGED ETF SCANNER
+# Version 4.0
 #
-# IMPORTANT:
-# The financial scoring engine below is intentionally preserved.
-# This version fixes the surrounding infrastructure:
+# Primary horizon: 5 trading days
 #
-# 1. ETF universe discovery
-# 2. 2X / 3X filtering
-# 3. inverse inclusion
-# 4. volume filtering
-# 5. bad/non-leveraged symbols
-# 6. duplicate symbols
-# 7. Yahoo/yfinance errors
-# 8. indentation/syntax issues
-# 9. invalid/missing market data
-# 10. JSON output for GitHub Pages/Blogger
+# Uses:
+# - 5-day rolling VWAP
+# - SMA 5 / 10 / 20
+# - 5-day momentum
+# - Relative volume
+# - RSI 14
+# - Trend direction
+# - S&P 500 market regime
+# - TRUE current-session intraday VWAP
 #
+# Intraday VWAP is calculated from 5-minute regular-session bars.
+# Intraday data is only requested for the top DAILY candidates.
 # ============================================================
 
 
-# -----------------------------
+# ============================================================
 # SETTINGS
-# -----------------------------
+# ============================================================
 
 MIN_DAILY_VOLUME = 300_000
 
@@ -40,39 +38,41 @@ HISTORY_PERIOD = "6mo"
 
 INCLUDE_INVERSE = True
 
-# Yahoo screener maximum is 250 results per request.
 SCREEN_PAGE_SIZE = 250
-
-# Maximum number of ETF screener pages to inspect.
-# 20 x 250 = 5,000 ETF records.
-MAX_SCREEN_PAGES = 20
+MAX_SCREEN_PAGES = 40
 
 REQUEST_DELAY = 0.10
 
 BREADTH_TICKER = "^GSPC"
 
+# Number of daily candidates that receive intraday VWAP analysis.
+INTRADAY_TOP_N = 25
+
+INTRADAY_INTERVAL = "5m"
+
+# Regular session only.
+INTRADAY_PREPOST = False
+
+OUTPUT_FILE = "screener_data.json"
+DOCS_OUTPUT_FILE = os.path.join("docs", "screener_data.json")
+
 
 # ============================================================
-# FALLBACK CORE LIST
-# ============================================================
-#
-# These are only a safety net if Yahoo's ETF screener misses
-# something or is temporarily unavailable.
-#
-# IMPORTANT:
-# This list contains ETFs/funds intended to be 2X or 3X
-# leveraged products. Ordinary stocks such as COIN, HOOD,
-# MARA, IREN are intentionally NOT included.
-#
+# CORE ETF UNIVERSE
 # ============================================================
 
-CORE_LEVERAGED_ETFS = [
-    # Semiconductors / technology
+CORE_ETFS = [
+
+    # -------------------------
+    # Semiconductors
+    # -------------------------
     "SOXL",
     "SOXS",
     "USD",
 
-    # Nasdaq / technology
+    # -------------------------
+    # Nasdaq / Technology
+    # -------------------------
     "TQQQ",
     "SQQQ",
     "TECL",
@@ -84,7 +84,9 @@ CORE_LEVERAGED_ETFS = [
     "WEBL",
     "WEBS",
 
+    # -------------------------
     # S&P / Dow / Russell
+    # -------------------------
     "UPRO",
     "SPXU",
     "UDOW",
@@ -96,9 +98,10 @@ CORE_LEVERAGED_ETFS = [
     "MIDU",
     "MIDZ",
     "RETL",
-    "REKT",
 
-    # Energy
+    # -------------------------
+    # Energy / Oil / Natural Gas
+    # -------------------------
     "ERX",
     "ERY",
     "GUSH",
@@ -110,7 +113,9 @@ CORE_LEVERAGED_ETFS = [
     "OILU",
     "OILD",
 
-    # Gold / metals
+    # -------------------------
+    # Gold / Metals
+    # -------------------------
     "AGQ",
     "ZSL",
     "NUGT",
@@ -120,28 +125,38 @@ CORE_LEVERAGED_ETFS = [
     "GDXU",
     "GDXD",
 
+    # -------------------------
     # Financials
+    # -------------------------
     "FAS",
     "FAZ",
 
+    # -------------------------
     # Healthcare
+    # -------------------------
     "CURE",
     "PILL",
 
-    # Real estate
+    # -------------------------
+    # Real Estate
+    # -------------------------
     "DRN",
     "DRV",
 
+    # -------------------------
     # Treasury
+    # -------------------------
     "TMF",
     "TMV",
 
+    # -------------------------
     # Volatility
+    # -------------------------
     "UVIX",
-    "UVXY",
-    "SVIX",
 
-    # Single-stock / thematic leveraged products
+    # -------------------------
+    # Single-stock / thematic
+    # -------------------------
     "MSTU",
     "MSTX",
     "MSTP",
@@ -165,7 +180,9 @@ CORE_LEVERAGED_ETFS = [
     "MULL",
     "AVGU",
 
-    # Other leveraged products
+    # -------------------------
+    # Other
+    # -------------------------
     "FNGU",
     "FNGD",
     "DUSL",
@@ -175,12 +192,10 @@ CORE_LEVERAGED_ETFS = [
 
 
 # ============================================================
-# SYMBOL EXCLUSIONS
+# EXCLUSIONS
 # ============================================================
 
-# Ordinary stocks that were accidentally present in the old
-# manual list. They are NOT leveraged ETFs.
-EXCLUDED_SYMBOLS = {
+EXCLUDED_TICKERS = {
     "COIN",
     "HOOD",
     "MARA",
@@ -189,77 +204,802 @@ EXCLUDED_SYMBOLS = {
 
 
 # ============================================================
-# LEVERAGE DETECTION
+# INVERSE ETF SET
 # ============================================================
 
-def is_2x_or_3x_leveraged_name(symbol, name):
-    """
-    Determine whether Yahoo's ETF name appears to represent
-    a 2X or 3X leveraged product.
-
-    We intentionally do NOT simply search for 'BULL' or 'BEAR',
-    because that can catch products that are not actually 2X/3X.
-    """
-
-    text = f"{symbol} {name}".upper()
-
-    # Explicit 2X / 3X descriptions
-    patterns = [
-        r"\b2X\b",
-        r"\b3X\b",
-        r"\b2X LONG\b",
-        r"\b3X LONG\b",
-        r"\b2X SHORT\b",
-        r"\b3X SHORT\b",
-        r"\b2X BULL\b",
-        r"\b3X BULL\b",
-        r"\b2X BEAR\b",
-        r"\b3X BEAR\b",
-    ]
-
-    for pattern in patterns:
-        if re.search(pattern, text):
-            return True
-
-    return False
-
-
-def is_inverse_name(symbol, name):
-    """
-    Identify products that are explicitly inverse/short/bear.
-    """
-
-    text = f"{symbol} {name}".upper()
-
-    inverse_terms = [
-        "BEAR",
-        "SHORT",
-        "INVERSE",
-        "-2X",
-        "-3X",
-    ]
-
-    return any(term in text for term in inverse_terms)
+INVERSE_TICKERS = {
+    "SOXS",
+    "SQQQ",
+    "TECS",
+    "BERZ",
+    "HIBS",
+    "WEBS",
+    "SPXU",
+    "TZA",
+    "SRTY",
+    "MIDZ",
+    "ERY",
+    "DRIP",
+    "SCO",
+    "KOLD",
+    "OILD",
+    "ZSL",
+    "DUST",
+    "JDST",
+    "GDXD",
+    "FAZ",
+    "DRV",
+    "TMV",
+    "TSLQ",
+    "NVD",
+    "AAPD",
+    "FNGD",
+}
 
 
 # ============================================================
-# YAHOO ETF SCREENER
+# RSI
 # ============================================================
 
-def get_yahoo_etf_universe():
-    """
-    Pull U.S. ETFs from Yahoo's ETF screener in pages.
+def calculate_rsi(series, period=14):
 
-    We do NOT use dayvolume as the ETF screener sort field.
-    Volume is verified later from historical price data.
+    delta = series.diff()
 
-    Yahoo limits a screener response to 250 records, so we
-    paginate through multiple pages.
-    """
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
 
-    print("\nDownloading Yahoo ETF universe...")
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
 
-    discovered = {}
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+
+    rsi = 100 - (100 / (1 + rs))
+
+    return rsi
+
+
+# ============================================================
+# ROLLING VWAP
+# ============================================================
+
+def calculate_rolling_vwap(df, window=5):
+
+    typical_price = (
+        df["High"] +
+        df["Low"] +
+        df["Close"]
+    ) / 3
+
+    price_volume = typical_price * df["Volume"]
+
+    rolling_pv = price_volume.rolling(window).sum()
+
+    rolling_volume = df["Volume"].rolling(window).sum()
+
+    vwap = rolling_pv / rolling_volume.replace(0, np.nan)
+
+    return vwap
+
+
+# ============================================================
+# TRUE INTRADAY VWAP
+# ============================================================
+
+def calculate_intraday_vwap(df):
+
+    if df is None or df.empty:
+        return None
+
+    required_columns = {
+        "High",
+        "Low",
+        "Close",
+        "Volume"
+    }
+
+    if not required_columns.issubset(df.columns):
+        return None
+
+    data = df.copy()
+
+    data = data.dropna(
+        subset=["High", "Low", "Close", "Volume"]
+    )
+
+    if data.empty:
+        return None
+
+    # Ignore zero-volume bars.
+    data = data[data["Volume"] > 0]
+
+    if data.empty:
+        return None
+
+    typical_price = (
+        data["High"] +
+        data["Low"] +
+        data["Close"]
+    ) / 3
+
+    cumulative_pv = (
+        typical_price * data["Volume"]
+    ).cumsum()
+
+    cumulative_volume = data["Volume"].cumsum()
+
+    vwap = (
+        cumulative_pv /
+        cumulative_volume.replace(0, np.nan)
+    )
+
+    latest_vwap = vwap.iloc[-1]
+
+    latest_close = data["Close"].iloc[-1]
+
+    if pd.isna(latest_vwap):
+        return None
+
+    distance_pct = (
+        (latest_close - latest_vwap) /
+        latest_vwap
+    ) * 100
+
+    return {
+        "intraday_vwap": float(latest_vwap),
+        "intraday_price": float(latest_close),
+        "intraday_vwap_distance_pct": float(distance_pct),
+        "intraday_bars": int(len(data)),
+    }
+
+
+# ============================================================
+# GET INTRADAY DATA
+# ============================================================
+
+def get_intraday_vwap(ticker):
+
+    try:
+
+        time.sleep(REQUEST_DELAY)
+
+        intraday = yf.Ticker(ticker).history(
+            period="1d",
+            interval=INTRADAY_INTERVAL,
+            auto_adjust=True,
+            prepost=INTRADAY_PREPOST
+        )
+
+        if intraday is None or intraday.empty:
+            return None
+
+        return calculate_intraday_vwap(intraday)
+
+    except Exception as e:
+
+        print(
+            f" Intraday VWAP unavailable for "
+            f"{ticker}: {e}"
+        )
+
+        return None
+
+
+# ============================================================
+# GET DAILY HISTORY
+# ============================================================
+
+def get_history(ticker):
+
+    try:
+
+        time.sleep(REQUEST_DELAY)
+
+        df = yf.Ticker(ticker).history(
+            period=HISTORY_PERIOD,
+            interval="1d",
+            auto_adjust=True
+        )
+
+        if df is None or df.empty:
+            return None
+
+        df = df.dropna(
+            subset=["Open", "High", "Low", "Close"]
+        )
+
+        if df.empty:
+            return None
+
+        return df
+
+    except Exception as e:
+
+        print(
+            f"History error for {ticker}: {e}"
+        )
+
+        return None
+
+
+# ============================================================
+# VOLUME FILTER
+# ============================================================
+
+def check_volume(ticker):
+
+    try:
+
+        time.sleep(REQUEST_DELAY)
+
+        df = yf.Ticker(ticker).history(
+            period="1mo",
+            interval="1d",
+            auto_adjust=True
+        )
+
+        if df is None or df.empty:
+            return None
+
+        df = df.dropna(
+            subset=["Volume"]
+        )
+
+        if len(df) < 5:
+            return None
+
+        latest_volume = float(df["Volume"].iloc[-1])
+
+        avg_volume_5 = float(
+            df["Volume"].tail(5).mean()
+        )
+
+        avg_volume_10 = float(
+            df["Volume"].tail(10).mean()
+        )
+
+        if latest_volume < MIN_DAILY_VOLUME:
+            return None
+
+        return {
+            "latest_volume": latest_volume,
+            "avg_volume_5d": avg_volume_5,
+            "avg_volume_10d": avg_volume_10,
+        }
+
+    except Exception as e:
+
+        print(
+            f"Volume error for {ticker}: {e}"
+        )
+
+        return None
+
+
+# ============================================================
+# MARKET REGIME
+# ============================================================
+
+def get_market_regime():
+
+    try:
+
+        df = yf.Ticker(
+            BREADTH_TICKER
+        ).history(
+            period="2y",
+            interval="1d",
+            auto_adjust=True
+        )
+
+        if df is None or df.empty:
+            return "NEUTRAL", 1.0
+
+        close = df["Close"].dropna()
+
+        if len(close) < 200:
+            return "NEUTRAL", 1.0
+
+        sma200 = close.rolling(200).mean().iloc[-1]
+
+        current_price = close.iloc[-1]
+
+        if current_price > sma200:
+
+            return "BULLISH", 1.15
+
+        elif current_price < sma200:
+
+            return "BEARISH", 0.85
+
+        return "NEUTRAL", 1.0
+
+    except Exception as e:
+
+        print(
+            f"Market regime error: {e}"
+        )
+
+        return "NEUTRAL", 1.0
+
+
+# ============================================================
+# ALGO 7 SCORE
+# ============================================================
+
+def calculate_algo_score(
+    df,
+    volume_info,
+    breadth_multiplier=1.0,
+    intraday_info=None
+):
+
+    if df is None or len(df) < 30:
+        return None
+
+    close = df["Close"]
+
+    current_price = float(close.iloc[-1])
+
+    # --------------------------------------------------------
+    # Moving averages
+    # --------------------------------------------------------
+
+    sma5 = close.rolling(5).mean()
+
+    sma10 = close.rolling(10).mean()
+
+    sma20 = close.rolling(20).mean()
+
+    current_sma5 = float(sma5.iloc[-1])
+    current_sma10 = float(sma10.iloc[-1])
+    current_sma20 = float(sma20.iloc[-1])
+
+    previous_sma5 = float(sma5.iloc[-2])
+    previous_sma10 = float(sma10.iloc[-2])
+
+    # --------------------------------------------------------
+    # 5-day VWAP
+    # --------------------------------------------------------
+
+    vwap5 = calculate_rolling_vwap(
+        df,
+        window=5
+    )
+
+    current_vwap5 = vwap5.iloc[-1]
+
+    if pd.isna(current_vwap5):
+
+        return None
+
+    current_vwap5 = float(current_vwap5)
+
+    # --------------------------------------------------------
+    # RSI
+    # --------------------------------------------------------
+
+    rsi_series = calculate_rsi(
+        close,
+        period=14
+    )
+
+    current_rsi = rsi_series.iloc[-1]
+
+    if pd.isna(current_rsi):
+        current_rsi = 50.0
+
+    current_rsi = float(current_rsi)
+
+    # --------------------------------------------------------
+    # 5-day momentum
+    # --------------------------------------------------------
+
+    momentum_5d = (
+        (
+            current_price /
+            float(close.iloc[-6])
+        ) - 1
+    ) * 100
+
+    # --------------------------------------------------------
+    # VWAP distance
+    # --------------------------------------------------------
+
+    vwap_distance_pct = (
+        (
+            current_price -
+            current_vwap5
+        ) /
+        current_vwap5
+    ) * 100
+
+    # --------------------------------------------------------
+    # SMA20 distance
+    # --------------------------------------------------------
+
+    sma20_distance_pct = (
+        (
+            current_price -
+            current_sma20
+        ) /
+        current_sma20
+    ) * 100
+
+    # --------------------------------------------------------
+    # Relative volume
+    # --------------------------------------------------------
+
+    avg_volume_10d = volume_info.get(
+        "avg_volume_10d",
+        0
+    )
+
+    latest_volume = volume_info.get(
+        "latest_volume",
+        0
+    )
+
+    if avg_volume_10d > 0:
+
+        relative_volume = (
+            latest_volume /
+            avg_volume_10d
+        )
+
+    else:
+
+        relative_volume = 0
+
+    # ========================================================
+    # BASE SCORE
+    #
+    # Maximum = 100
+    #
+    # 5-day VWAP 10
+    # Fast trend 25
+    # SMA20 10
+    # Relative volume 20
+    # Momentum 15
+    # Trend direction 15
+    # Intraday VWAP 5
+    # ========================================================
+
+    score = 0.0
+
+    # --------------------------------------------------------
+    # 1. 5-DAY VWAP — 10 POINTS
+    # --------------------------------------------------------
+
+    if current_price > current_vwap5:
+
+        if vwap_distance_pct <= 3:
+
+            score += 10
+
+        elif vwap_distance_pct <= 6:
+
+            score += 7
+
+        else:
+
+            score += 3
+
+    # --------------------------------------------------------
+    # 2. FAST TREND — 25 POINTS
+    # --------------------------------------------------------
+
+    if (
+        current_price >
+        current_sma5 >
+        current_sma10
+    ):
+
+        score += 25
+
+    elif current_price > current_sma5:
+
+        score += 15
+
+    elif current_price > current_sma10:
+
+        score += 8
+
+    # --------------------------------------------------------
+    # 3. SMA20 — 10 POINTS
+    # --------------------------------------------------------
+
+    if current_price > current_sma20:
+
+        score += 10
+
+    # --------------------------------------------------------
+    # 4. RELATIVE VOLUME — 20 POINTS
+    # --------------------------------------------------------
+
+    if relative_volume > 1.50:
+
+        score += 20
+
+    elif relative_volume > 1.25:
+
+        score += 17
+
+    elif relative_volume > 1.00:
+
+        score += 12
+
+    else:
+
+        score += 5
+
+    # --------------------------------------------------------
+    # 5. 5-DAY MOMENTUM — 15 POINTS
+    # --------------------------------------------------------
+
+    if momentum_5d >= 4:
+
+        score += 15
+
+    elif momentum_5d >= 2:
+
+        score += 8
+
+    elif momentum_5d >= 0:
+
+        score += 3
+
+    # --------------------------------------------------------
+    # 6. TREND DIRECTION — 15 POINTS
+    # --------------------------------------------------------
+
+    if current_sma5 > previous_sma5:
+
+        score += 5
+
+    if current_sma10 > previous_sma10:
+
+        score += 5
+
+    if current_sma5 > current_sma10:
+
+        score += 5
+
+    # --------------------------------------------------------
+    # 7. TRUE INTRADAY VWAP — 5 POINTS
+    # --------------------------------------------------------
+
+    intraday_vwap_status = "N/A"
+
+    intraday_vwap = None
+
+    intraday_vwap_distance_pct = None
+
+    if intraday_info is not None:
+
+        intraday_vwap = intraday_info.get(
+            "intraday_vwap"
+        )
+
+        intraday_vwap_distance_pct = intraday_info.get(
+            "intraday_vwap_distance_pct"
+        )
+
+        if (
+            intraday_vwap is not None and
+            intraday_vwap_distance_pct is not None
+        ):
+
+            if intraday_vwap_distance_pct >= 0.50:
+
+                score += 5
+
+                intraday_vwap_status = "ABOVE"
+
+            elif intraday_vwap_distance_pct >= 0:
+
+                score += 3
+
+                intraday_vwap_status = "NEAR/ABOVE"
+
+            elif intraday_vwap_distance_pct >= -0.50:
+
+                score += 1
+
+                intraday_vwap_status = "RECLAIMING"
+
+            else:
+
+                intraday_vwap_status = "BELOW"
+
+    # --------------------------------------------------------
+    # RSI EXHAUSTION PENALTY
+    # --------------------------------------------------------
+
+    rsi_penalty = 0
+
+    if current_rsi >= 75:
+
+        rsi_penalty = 15
+
+    elif current_rsi >= 70:
+
+        rsi_penalty = 5
+
+    score -= rsi_penalty
+
+    # --------------------------------------------------------
+    # MARKET REGIME
+    # --------------------------------------------------------
+
+    score *= breadth_multiplier
+
+    # Keep score between 0 and 100.
+    final_score = max(
+        0,
+        min(
+            100,
+            score
+        )
+    )
+
+    # --------------------------------------------------------
+    # GRADE
+    # --------------------------------------------------------
+
+    if final_score >= 80:
+
+        grade = "HIGH CONVICTION"
+
+        status = "BULLISH LEAD"
+
+    elif final_score >= 55:
+
+        grade = "MODERATE"
+
+        status = "WATCHLIST"
+
+    else:
+
+        grade = "WEAK"
+
+        status = "AVOID / CASH"
+
+    return {
+        "score": round(final_score, 2),
+        "grade": grade,
+        "status": status,
+
+        "price": round(
+            current_price,
+            4
+        ),
+
+        "sma5": round(
+            current_sma5,
+            4
+        ),
+
+        "sma10": round(
+            current_sma10,
+            4
+        ),
+
+        "sma20": round(
+            current_sma20,
+            4
+        ),
+
+        "vwap5": round(
+            current_vwap5,
+            4
+        ),
+
+        "distance_vwap5_pct": round(
+            vwap_distance_pct,
+            2
+        ),
+
+        "distance_sma20_pct": round(
+            sma20_distance_pct,
+            2
+        ),
+
+        "momentum_5d_pct": round(
+            momentum_5d,
+            2
+        ),
+
+        "rsi_14": round(
+            current_rsi,
+            2
+        ),
+
+        "relative_volume": round(
+            relative_volume,
+            2
+        ),
+
+        "intraday_vwap": (
+            round(intraday_vwap, 4)
+            if intraday_vwap is not None
+            else None
+        ),
+
+        "intraday_vwap_distance_pct": (
+            round(
+                intraday_vwap_distance_pct,
+                2
+            )
+            if intraday_vwap_distance_pct is not None
+            else None
+        ),
+
+        "intraday_vwap_status":
+            intraday_vwap_status,
+
+        "rsi_penalty":
+            rsi_penalty,
+    }
+
+
+# ============================================================
+# ANALYZE TICKER
+# ============================================================
+
+def analyze_ticker(
+    ticker,
+    breadth_multiplier=1.0,
+    intraday_info=None
+):
+
+    df = get_history(ticker)
+
+    if df is None:
+        return None
+
+    volume_info = check_volume(ticker)
+
+    if volume_info is None:
+        return None
+
+    result = calculate_algo_score(
+        df=df,
+        volume_info=volume_info,
+        breadth_multiplier=breadth_multiplier,
+        intraday_info=intraday_info
+    )
+
+    if result is None:
+        return None
+
+    result["ticker"] = ticker
+
+    result["inverse"] = (
+        ticker in INVERSE_TICKERS
+    )
+
+    result["latest_volume"] = int(
+        volume_info["latest_volume"]
+    )
+
+    result["avg_volume_5d"] = int(
+        volume_info["avg_volume_5d"]
+    )
+
+    result["avg_volume_10d"] = int(
+        volume_info["avg_volume_10d"]
+    )
+
+    return result
+
+
+# ============================================================
+# YAHOO ETF DISCOVERY
+# ============================================================
+
+def discover_leveraged_etfs():
+
+    discovered = set()
 
     try:
 
@@ -273,560 +1013,178 @@ def get_yahoo_etf_universe():
             ]
         )
 
-        for page in range(MAX_SCREEN_PAGES):
+        for page in range(
+            MAX_SCREEN_PAGES
+        ):
 
-            offset = page * SCREEN_PAGE_SIZE
+            try:
 
-            print(
-                f" Yahoo ETF page {page + 1} "
-                f"(offset {offset})..."
+                response = yf.screen(
+                    query,
+                    size=SCREEN_PAGE_SIZE,
+                    offset=(
+                        page *
+                        SCREEN_PAGE_SIZE
+                    )
+                )
+
+            except TypeError:
+
+                # Compatibility with some
+                # yfinance versions.
+                response = yf.screen(
+                    query,
+                    size=SCREEN_PAGE_SIZE
+                )
+
+            if not response:
+                break
+
+            quotes = response.get(
+                "quotes",
+                []
             )
-
-            response = yf.screen(
-                query,
-                offset=offset,
-                size=SCREEN_PAGE_SIZE,
-                sortField="ticker",
-                sortAsc=True
-            )
-
-            quotes = response.get("quotes", [])
 
             if not quotes:
-                print(" No more Yahoo ETF records.")
                 break
 
             for item in quotes:
 
-                symbol = str(
-                    item.get("symbol", "")
-                ).upper().strip()
-
-                name = (
-                    item.get("longName")
-                    or item.get("shortName")
-                    or ""
+                symbol = item.get(
+                    "symbol"
                 )
 
                 if not symbol:
                     continue
 
-                if symbol in EXCLUDED_SYMBOLS:
+                symbol = symbol.upper()
+
+                if symbol in EXCLUDED_TICKERS:
                     continue
 
-                if not is_2x_or_3x_leveraged_name(
-                    symbol,
-                    name
-                ):
+                name = str(
+                    item.get(
+                        "longName",
+                        ""
+                    )
+                )
+
+                short_name = str(
+                    item.get(
+                        "shortName",
+                        ""
+                    )
+                )
+
+                combined = (
+                    name + " " +
+                    short_name
+                ).upper()
+
+                leveraged_match = re.search(
+                    r"\b[23]X\b|2X|3X|LEVERAGED",
+                    combined
+                )
+
+                if not leveraged_match:
                     continue
 
-                if (
-                    not INCLUDE_INVERSE
-                    and is_inverse_name(symbol, name)
-                ):
-                    continue
+                if not INCLUDE_INVERSE:
 
-                discovered[symbol] = {
-                    "symbol": symbol,
-                    "name": name,
-                    "source": "Yahoo ETF Screener"
-                }
+                    inverse_words = (
+                        "INVERSE",
+                        "BEAR",
+                        "SHORT",
+                        "ULTRA SHORT",
+                        "DIREXION DAILY"
+                    )
 
-            # If Yahoo returned fewer than the requested page
-            # size, we've reached the end.
+                    if any(
+                        word in combined
+                        for word in inverse_words
+                    ):
+
+                        continue
+
+                discovered.add(symbol)
+
             if len(quotes) < SCREEN_PAGE_SIZE:
                 break
-
-            time.sleep(REQUEST_DELAY)
 
     except Exception as e:
 
         print(
-            "Yahoo ETF screener unavailable:",
-            repr(e)
+            "Yahoo ETF discovery unavailable:"
         )
 
-    print(
-        f"Yahoo discovered "
-        f"{len(discovered)} possible 2X/3X ETFs."
-    )
+        print(e)
 
     return discovered
 
 
 # ============================================================
-# BUILD COMPLETE UNIVERSE
+# BUILD UNIVERSE
 # ============================================================
 
 def build_universe():
 
-    yahoo_candidates = get_yahoo_etf_universe()
-
-    symbols = set()
-
-    # Add Yahoo candidates
-    for symbol in yahoo_candidates:
-        if symbol not in EXCLUDED_SYMBOLS:
-            symbols.add(symbol)
-
-    # Add safety-net core list
-    for symbol in CORE_LEVERAGED_ETFS:
-        if symbol not in EXCLUDED_SYMBOLS:
-            symbols.add(symbol)
-
-    symbols = sorted(symbols)
-
-    print(
-        f"\nTotal candidate symbols before "
-        f"volume validation: {len(symbols)}"
+    universe = set(
+        CORE_ETFS
     )
 
-    return symbols
+    discovered = discover_leveraged_etfs()
 
-
-# ============================================================
-# DOWNLOAD DAILY DATA SAFELY
-# ============================================================
-
-def get_history(ticker, period=HISTORY_PERIOD):
-
-    try:
-
-        df = yf.Ticker(ticker).history(
-            period=period,
-            interval="1d",
-            auto_adjust=False
-        )
-
-        if df is None or df.empty:
-            return None
-
-        # Required columns
-        required_columns = [
-            "Open",
-            "High",
-            "Low",
-            "Close",
-            "Volume",
-        ]
-
-        for column in required_columns:
-
-            if column not in df.columns:
-                return None
-
-        # Remove rows without essential data
-        df = df.dropna(
-            subset=[
-                "High",
-                "Low",
-                "Close",
-                "Volume"
-            ]
-        )
-
-        if df.empty:
-            return None
-
-        return df
-
-    except Exception as e:
-
-        print(
-            f" {ticker}: history error -> {e}"
-        )
-
-        return None
-
-
-# ============================================================
-# VOLUME FILTER
-# ============================================================
-
-def volume_filter(tickers):
-
-    qualified = []
-
-    print("\nChecking daily volume...")
-
-    for ticker in tickers:
-
-        df = get_history(
-            ticker,
-            period="1mo"
-        )
-
-        if df is None or df.empty:
-            continue
-
-        if len(df) < 5:
-            continue
-
-        try:
-
-            latest_volume = int(
-                df["Volume"].iloc[-1]
-            )
-
-            avg_volume_5d = float(
-                df["Volume"]
-                .tail(5)
-                .mean()
-            )
-
-            if latest_volume >= MIN_DAILY_VOLUME:
-
-                qualified.append(
-                    {
-                        "symbol": ticker,
-                        "daily_volume": latest_volume,
-                        "avg_volume_5d": round(
-                            avg_volume_5d
-                        )
-                    }
-                )
-
-                print(
-                    f" QUALIFIED "
-                    f"{ticker:<8} "
-                    f"volume={latest_volume:,}"
-                )
-
-        except Exception as e:
-
-            print(
-                f" {ticker}: volume error -> {e}"
-            )
-
-        time.sleep(REQUEST_DELAY)
-
-    return qualified
-
-
-# ============================================================
-# MARKET BREADTH
-# ============================================================
-
-def get_market_breadth():
-
-    try:
-
-        spy = yf.Ticker(
-            BREADTH_TICKER
-        ).history(
-            period="1y",
-            interval="1d"
-        )
-
-        if spy is None or spy.empty:
-            return "NEUTRAL", 1.0
-
-        if len(spy) < 200:
-            return "NEUTRAL", 1.0
-
-        current_price = float(
-            spy["Close"].iloc[-1]
-        )
-
-        sma200 = float(
-            spy["Close"]
-            .rolling(200)
-            .mean()
-            .iloc[-1]
-        )
-
-        if current_price > sma200:
-
-            return "BULLISH", 1.15
-
-        return "BEARISH", 0.85
-
-    except Exception as e:
-
-        print(
-            "Market breadth error:",
-            e
-        )
-
-        return "NEUTRAL", 1.0
-
-
-# ============================================================
-# ALGO 7 FINANCIAL ENGINE
-# ============================================================
-#
-# DO NOT CHANGE THIS SECTION IF YOU WANT TO KEEP THE ORIGINAL
-# ALGO 7 ENGINE.
-#
-# ============================================================
-
-def calculate_algo_score(
-    df,
-    breadth_multiplier
-):
-
-    if len(df) < 50:
-
-        return (
-            0,
-            "DISQUALIFIED",
-            "Insufficient Data"
-        )
-
-    df = df.copy()
-
-    df["Typical_Price"] = (
-        df["High"]
-        + df["Low"]
-        + df["Close"]
-    ) / 3
-
-    df["PV"] = (
-        df["Typical_Price"]
-        * df["Volume"]
+    universe.update(
+        discovered
     )
 
-    vwap_20 = (
-        df["PV"].rolling(20).sum()
-        /
-        df["Volume"].rolling(20).sum()
-    )
+    universe = {
+        ticker
+        for ticker in universe
+        if ticker not in EXCLUDED_TICKERS
+    }
 
-    current_vwap = float(
-        vwap_20.iloc[-1]
-    )
+    if not INCLUDE_INVERSE:
 
-    current_close = float(
-        df["Close"].iloc[-1]
-    )
-
-    sma20 = float(
-        df["Close"]
-        .rolling(20)
-        .mean()
-        .iloc[-1]
-    )
-
-    sma50 = float(
-        df["Close"]
-        .rolling(50)
-        .mean()
-        .iloc[-1]
-    )
-
-    base_score = 0
-
-    # --------------------------------
-    # VWAP
-    # --------------------------------
-
-    if current_close > current_vwap:
-
-        vwap_dist = (
-            current_close
-            - current_vwap
-        ) / current_vwap
-
-        if 0.005 <= vwap_dist <= 0.08:
-
-            base_score += 35
-
-        elif vwap_dist > 0.08:
-
-            base_score += 20
-
-        else:
-
-            base_score += 25
-
-    else:
-
-        base_score += 5
-
-    # --------------------------------
-    # TREND
-    # --------------------------------
-
-    if current_close > sma20 > sma50:
-
-        base_score += 35
-
-    elif current_close > sma20:
-
-        base_score += 20
-
-    elif current_close > sma50:
-
-        base_score += 10
-
-    # --------------------------------
-    # VOLUME
-    # --------------------------------
-
-    vol_sma20 = float(
-        df["Volume"]
-        .rolling(20)
-        .mean()
-        .iloc[-1]
-    )
-
-    latest_volume = float(
-        df["Volume"].iloc[-1]
-    )
-
-    if latest_volume > vol_sma20 * 1.2:
-
-        base_score += 30
-
-    elif latest_volume > vol_sma20:
-
-        base_score += 15
-
-    # --------------------------------
-    # MARKET REGIME
-    # --------------------------------
-
-    final_score = int(
-        round(
-            base_score
-            * breadth_multiplier
-        )
-    )
-
-    final_score = max(
-        0,
-        min(100, final_score)
-    )
-
-    # --------------------------------
-    # GRADE
-    # --------------------------------
-
-    if final_score >= 75:
-
-        grade = "HIGH CONVICTION"
-        status = "BULLISH LEAD"
-
-    elif final_score >= 50:
-
-        grade = "MODERATE"
-        status = "WATCHLIST"
-
-    else:
-
-        grade = "WEAK"
-        status = "AVOID / CASH"
-
-    return (
-        final_score,
-        grade,
-        status
-    )
-
-
-# ============================================================
-# SCAN INDIVIDUAL ETF
-# ============================================================
-
-def analyze_ticker(
-    ticker,
-    breadth_multiplier
-):
-
-    df = get_history(
-        ticker,
-        period=HISTORY_PERIOD
-    )
-
-    if df is None:
-        return None
-
-    if len(df) < 50:
-        return None
-
-    try:
-
-        score, grade, status = (
-            calculate_algo_score(
-                df,
-                breadth_multiplier
-            )
-        )
-
-        latest_close = float(
-            df["Close"].iloc[-1]
-        )
-
-        avg_volume_20 = float(
-            df["Volume"]
-            .tail(20)
-            .mean()
-        )
-
-        latest_volume = int(
-            df["Volume"].iloc[-1]
-        )
-
-        # 5-day momentum
-        if len(df) >= 6:
-
-            momentum_5d = (
-                (
-                    df["Close"].iloc[-1]
-                    /
-                    df["Close"].iloc[-6]
-                ) - 1
-            ) * 100
-
-        else:
-
-            momentum_5d = np.nan
-
-        sma20 = float(
-            df["Close"]
-            .rolling(20)
-            .mean()
-            .iloc[-1]
-        )
-
-        distance_sma20 = (
-            (
-                latest_close
-                /
-                sma20
-            ) - 1
-        ) * 100
-
-        return {
-            "symbol": ticker,
-            "score": int(score),
-            "grade": grade,
-            "status": status,
-            "price": round(
-                latest_close,
-                2
-            ),
-            "volume": latest_volume,
-            "avg_volume_20d": round(
-                avg_volume_20
-            ),
-            "momentum_5d_pct": round(
-                float(momentum_5d),
-                2
-            ),
-            "distance_sma20_pct": round(
-                float(distance_sma20),
-                2
-            )
+        universe = {
+            ticker
+            for ticker in universe
+            if ticker not in INVERSE_TICKERS
         }
 
-    except Exception as e:
+    return sorted(
+        universe
+    )
 
-        print(
-            f" {ticker}: analysis error -> {e}"
+
+# ============================================================
+# SAVE JSON
+# ============================================================
+
+def save_json(data, filename):
+
+    directory = os.path.dirname(
+        filename
+    )
+
+    if directory:
+
+        os.makedirs(
+            directory,
+            exist_ok=True
         )
 
-        return None
+    with open(
+        filename,
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        json.dump(
+            data,
+            f,
+            indent=2
+        )
 
 
 # ============================================================
@@ -835,121 +1193,355 @@ def analyze_ticker(
 
 def run_pipeline():
 
+    print()
     print("=" * 70)
-    print("ALGO 7 — LEVERAGED ETF MARKET SCANNER")
+    print("ALGO 7 — 5-DAY LEVERAGED ETF SCANNER")
+    print("Version 4.0 — Intraday VWAP Added")
     print("=" * 70)
+    print()
 
-    # --------------------------------
-    # 1. Build universe
-    # --------------------------------
+    # --------------------------------------------------------
+    # Market regime
+    # --------------------------------------------------------
+
+    print("Checking market regime...")
+
+    market_regime, breadth_multiplier = (
+        get_market_regime()
+    )
+
+    print(
+        f"Market regime: "
+        f"{market_regime}"
+    )
+
+    print(
+        f"Breadth multiplier: "
+        f"{breadth_multiplier}"
+    )
+
+    print()
+
+    # --------------------------------------------------------
+    # Build universe
+    # --------------------------------------------------------
 
     universe = build_universe()
 
-    # --------------------------------
-    # 2. Volume filter
-    # --------------------------------
-
-    qualified = volume_filter(
-        universe
+    print(
+        f"Universe size: "
+        f"{len(universe)}"
     )
 
-    qualified_symbols = [
-        item["symbol"]
-        for item in qualified
-    ]
+    print()
+
+    # --------------------------------------------------------
+    # Daily screening
+    # --------------------------------------------------------
+
+    daily_results = []
 
     print(
-        "\n"
-        f"Qualified funds over "
-        f"{MIN_DAILY_VOLUME:,} "
-        f"latest-day volume: "
-        f"{len(qualified_symbols)}"
+        "Running daily 5-day screening..."
     )
 
-    # --------------------------------
-    # 3. Market regime
-    # --------------------------------
+    print()
 
-    (
-        breadth_regime,
-        breadth_mult
-    ) = get_market_breadth()
-
-    print(
-        "\nMarket regime:",
-        breadth_regime
-    )
-
-    print(
-        "Breadth multiplier:",
-        breadth_mult
-    )
-
-    # --------------------------------
-    # 4. Analyze qualified ETFs
-    # --------------------------------
-
-    results = []
-
-    print(
-        "\nRunning Algo 7..."
-    )
-
-    for ticker in qualified_symbols:
+    for index, ticker in enumerate(
+        universe,
+        start=1
+    ):
 
         print(
-            f" Analyzing {ticker}..."
+            f"[{index}/{len(universe)}] "
+            f"{ticker}"
         )
 
         result = analyze_ticker(
-            ticker,
-            breadth_mult
+            ticker=ticker,
+            breadth_multiplier=breadth_multiplier,
+            intraday_info=None
         )
 
         if result is not None:
 
-            results.append(result)
+            daily_results.append(
+                result
+            )
 
-        time.sleep(
-            REQUEST_DELAY
-        )
+    # --------------------------------------------------------
+    # Sort daily candidates
+    # --------------------------------------------------------
 
-    # --------------------------------
-    # 5. Sort leaderboard
-    # --------------------------------
-
-    results.sort(
+    daily_results.sort(
         key=lambda x: (
             x["score"],
-            x["momentum_5d_pct"]
+            x["momentum_5d_pct"],
+            x["relative_volume"]
         ),
         reverse=True
     )
 
-    # --------------------------------
-    # 6. Assign ranks
-    # --------------------------------
+    print()
+    print(
+        "=" * 70
+    )
 
-    for i, item in enumerate(
-        results,
+    print(
+        f"Daily-qualified ETFs: "
+        f"{len(daily_results)}"
+    )
+
+    print(
+        "=" * 70
+    )
+
+    # --------------------------------------------------------
+    # Intraday VWAP
+    #
+    # Only top N daily candidates.
+    # This significantly reduces Yahoo API requests.
+    # --------------------------------------------------------
+
+    intraday_candidates = (
+        daily_results[
+            :INTRADAY_TOP_N
+        ]
+    )
+
+    print()
+    print(
+        f"Checking TRUE intraday VWAP "
+        f"for top {len(intraday_candidates)} "
+        f"daily candidates..."
+    )
+
+    print()
+
+    intraday_map = {}
+
+    for result in intraday_candidates:
+
+        ticker = result["ticker"]
+
+        print(
+            f" Intraday VWAP: {ticker}"
+        )
+
+        intraday_info = (
+            get_intraday_vwap(
+                ticker
+            )
+        )
+
+        intraday_map[ticker] = (
+            intraday_info
+        )
+
+    # --------------------------------------------------------
+    # Recalculate top candidates with
+    # intraday VWAP confirmation.
+    # --------------------------------------------------------
+
+    final_results = []
+
+    for index, result in enumerate(
+        daily_results
+    ):
+
+        ticker = result["ticker"]
+
+        # Only the top daily candidates
+        # receive intraday confirmation.
+        if index < INTRADAY_TOP_N:
+
+            df = get_history(
+                ticker
+            )
+
+            if df is None:
+                continue
+
+            volume_info = check_volume(
+                ticker
+            )
+
+            if volume_info is None:
+                continue
+
+            rescored = calculate_algo_score(
+                df=df,
+                volume_info=volume_info,
+                breadth_multiplier=breadth_multiplier,
+                intraday_info=intraday_map.get(
+                    ticker
+                )
+            )
+
+            if rescored is None:
+                continue
+
+            rescored["ticker"] = ticker
+
+            rescored["inverse"] = (
+                ticker in INVERSE_TICKERS
+            )
+
+            rescored["latest_volume"] = int(
+                volume_info["latest_volume"]
+            )
+
+            rescored["avg_volume_5d"] = int(
+                volume_info["avg_volume_5d"]
+            )
+
+            rescored["avg_volume_10d"] = int(
+                volume_info["avg_volume_10d"]
+            )
+
+            final_results.append(
+                rescored
+            )
+
+        else:
+
+            final_results.append(
+                result
+            )
+
+    # --------------------------------------------------------
+    # Final ranking
+    # --------------------------------------------------------
+
+    final_results.sort(
+        key=lambda x: (
+            x["score"],
+            x["momentum_5d_pct"],
+            x["relative_volume"]
+        ),
+        reverse=True
+    )
+
+    # --------------------------------------------------------
+    # Add final ranks
+    # --------------------------------------------------------
+
+    for rank, result in enumerate(
+        final_results,
         start=1
     ):
 
-        item["rank"] = i
+        result["rank"] = rank
 
-    # --------------------------------
-    # 7. Output
-    # --------------------------------
+    # --------------------------------------------------------
+    # Print TOP 5
+    # --------------------------------------------------------
 
-    output_payload = {
+    print()
+    print("=" * 100)
+    print("TOP 5 ALGO 7 LEVERAGED ETF SIGNALS")
+    print("=" * 100)
+
+    for result in final_results[:5]:
+
+        inverse_text = (
+            "INVERSE"
+            if result["inverse"]
+            else "BULL"
+        )
+
+        print()
+
+        print(
+            f"#{result['rank']} "
+            f"{result['ticker']} "
+            f"[{inverse_text}]"
+        )
+
+        print(
+            f"Score: "
+            f"{result['score']:.2f}"
+        )
+
+        print(
+            f"Grade: "
+            f"{result['grade']}"
+        )
+
+        print(
+            f"Status: "
+            f"{result['status']}"
+        )
+
+        print(
+            f"5-Day Momentum: "
+            f"{result['momentum_5d_pct']:.2f}%"
+        )
+
+        print(
+            f"Relative Volume: "
+            f"{result['relative_volume']:.2f}x"
+        )
+
+        print(
+            f"RSI: "
+            f"{result['rsi_14']:.1f}"
+        )
+
+        print(
+            f"5-Day VWAP Distance: "
+            f"{result['distance_vwap5_pct']:.2f}%"
+        )
+
+        print(
+            f"Intraday VWAP: "
+            f"{result['intraday_vwap_status']}"
+        )
+
+        if (
+            result["intraday_vwap_distance_pct"]
+            is not None
+        ):
+
+            print(
+                f"Intraday VWAP Distance: "
+                f"{result['intraday_vwap_distance_pct']:.2f}%"
+            )
+
+    print()
+    print("=" * 100)
+
+    # --------------------------------------------------------
+    # Build JSON
+    # --------------------------------------------------------
+
+    output = {
 
         "scanner":
-            "Leveraged ETF Algo 7",
+            "Algo 7 Leveraged ETF Scanner",
 
         "engine_version":
-            "Algo 7 Original Engine",
+            "4.0",
 
-        "minimum_volume":
+        "scoring_horizon":
+            "5 trading days",
+
+        "rolling_vwap_window":
+            5,
+
+        "intraday_vwap":
+            True,
+
+        "intraday_interval":
+            INTRADAY_INTERVAL,
+
+        "intraday_regular_session_only":
+            not INTRADAY_PREPOST,
+
+        "intraday_candidates":
+            INTRADAY_TOP_N,
+
+        "volume_filter":
             MIN_DAILY_VOLUME,
 
         "history_period":
@@ -962,96 +1554,54 @@ def run_pipeline():
             len(universe),
 
         "volume_qualified":
-            len(qualified_symbols),
-
-        "qualified_funds":
-            len(results),
+            len(daily_results),
 
         "market_regime":
-            breadth_regime,
+            market_regime,
 
         "breadth_multiplier":
-            breadth_mult,
+            breadth_multiplier,
 
         "last_updated":
-            pd.Timestamp.now(
-                tz="UTC"
-            ).strftime(
-                "%Y-%m-%d %H:%M UTC"
-            ),
+            pd.Timestamp.utcnow().isoformat(),
 
         "tickers":
-            results
+            final_results
     }
 
-    # --------------------------------
-    # 8. Save JSON
-    # --------------------------------
+    # --------------------------------------------------------
+    # Save both locations
+    # --------------------------------------------------------
 
-    os.makedirs(
-        "docs",
-        exist_ok=True
+    save_json(
+        output,
+        OUTPUT_FILE
     )
 
-    output_files = [
-        "docs/screener_data.json",
-        "screener_data.json"
-    ]
+    save_json(
+        output,
+        DOCS_OUTPUT_FILE
+    )
 
-    for filename in output_files:
-
-        with open(
-            filename,
-            "w",
-            encoding="utf-8"
-        ) as f:
-
-            json.dump(
-                output_payload,
-                f,
-                indent=2
-            )
-
-    # --------------------------------
-    # 9. Console leaderboard
-    # --------------------------------
-
-    print("\n")
-    print("=" * 70)
-    print("ALGO 7 LEADERBOARD")
-    print("=" * 70)
-
-    for item in results:
-
-        print(
-            f"{item['rank']:>3}. "
-            f"{item['symbol']:<8} "
-            f"{item['score']:>3} "
-            f"{item['grade']:<18} "
-            f"{item['status']}"
-        )
-
-    print("=" * 70)
-
+    print()
     print(
-        f"\nSaved {len(results)} results."
+        f"Saved: {OUTPUT_FILE}"
     )
 
     print(
-        "JSON files created:"
+        f"Saved: {DOCS_OUTPUT_FILE}"
     )
 
-    for filename in output_files:
+    print()
+    print(
+        "Scan complete."
+    )
 
-        print(
-            f" {filename}"
-        )
-
-    return output_payload
+    return output
 
 
 # ============================================================
-# START
+# RUN
 # ============================================================
 
 if __name__ == "__main__":
